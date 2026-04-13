@@ -2,23 +2,23 @@
 
 A modern, streamlined financial management application for the University of Florida's Association for Information Systems (AIS) organization.
 
-## 🚀 Features
+## Features
 
-### 📊 Consolidated Financial Dashboard
+### Consolidated Financial Dashboard
 - **Single Dashboard**: All committee financials in one place with powerful filtering
 - **Interactive Filters**: Filter by semester, committee, and date range
 - **Real-time Metrics**: Key financial indicators at a glance
 - **Visual Analytics**: Beautiful charts and graphs for budget vs spending analysis
 - **Export Capabilities**: Download filtered data as CSV
 
-### 🏛️ Treasury Management Portal
+### Treasury Management Portal
 - **Password Protected**: Secure access for treasury committee members only
 - **Excel Upload**: Bulk upload transaction data via Excel files
 - **Term Management**: Add and manage academic terms
 - **Budget Management**: Set and update committee budgets
 - **Database Tools**: Export data and validate database integrity
 
-## 🛠️ Technology Stack
+## Technology Stack
 
 - **Frontend**: Streamlit
 - **Backend**: Python
@@ -26,14 +26,12 @@ A modern, streamlined financial management application for the University of Flo
 - **Data Processing**: Pandas
 - **Visualization**: Plotly
 
-## 📋 Prerequisites
-
+## Prerequisites
 - Python 3.8+
 - Supabase account and database
 - Streamlit Cloud account (for deployment)
 
-## 🚀 Installation
-
+## Installation
 1. **Clone the repository**
    ```bash
    git clone <repository-url>
@@ -63,8 +61,7 @@ A modern, streamlined financial management application for the University of Flo
    streamlit run app.py
    ```
 
-## 📊 Database Schema
-
+## Database Schema
 The application uses the following Supabase tables:
 
 ### `committees`
@@ -93,8 +90,7 @@ The application uses the following Supabase tables:
 - `purpose`
 - `account`
 
-## 🎯 Usage Guide
-
+## Usage Guide
 ### For General Members
 1. **Access the Dashboard**: Navigate to the "Financial Dashboard" tab
 2. **Filter Data**: Use the sidebar filters to view specific committees, semesters, or date ranges
@@ -108,8 +104,7 @@ The application uses the following Supabase tables:
 4. **Set Budgets**: Allocate budgets to committees for each term
 5. **Monitor Data**: Use database tools to export data and check integrity
 
-## 📤 Excel Upload Format
-
+## Excel Upload Format
 When uploading transaction data via Excel, ensure your file contains these columns:
 
 | Column | Type | Description |
@@ -121,15 +116,13 @@ When uploading transaction data via Excel, ensure your file contains these colum
 | `purpose` | Text | Transaction purpose/category |
 | `account` | Text | Account information |
 
-## 🔒 Security
-
+## Security
 - **Authentication**: User authentication via Supabase Auth
 - **Treasury Access**: Password-protected treasury portal
 - **Data Validation**: Input validation and data integrity checks
 - **Secure Storage**: Credentials stored in Streamlit secrets
 
-## 🚀 Deployment
-
+## Deployment
 ### Streamlit Cloud
 1. Push your code to GitHub
 2. Connect your repository to Streamlit Cloud
@@ -141,8 +134,7 @@ When uploading transaction data via Excel, ensure your file contains these colum
 streamlit run app.py --server.port 8501
 ```
 
-## 📈 Future Enhancements
-
+## Future Enhancements
 - [ ] Real-time notifications for budget overruns
 - [ ] Advanced reporting and analytics
 - [ ] Integration with banking APIs
@@ -150,22 +142,19 @@ streamlit run app.py --server.port 8501
 - [ ] Multi-user role management
 - [ ] Audit trail and change logging
 
-## 🤝 Contributing
-
+## Contributing
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Test thoroughly
 5. Submit a pull request
 
-## 📞 Support
-
+## Support
 For technical support or questions, contact the Treasury Committee or create an issue in the repository.
 
-## 📄 License
-
+## License
 This project is proprietary to the University of Florida AIS organization.
 
 ---
 
-**Made with ❤️ by the UF AIS Treasury Committee**
+**Made with love by the UF AIS Treasury Committee**
