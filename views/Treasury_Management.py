@@ -6,6 +6,11 @@ from components import animated_typing_title, apply_nav_title
 from datetime import datetime
 import re
 
+from views.treasury_parse_utils import (
+    merge_legacy_and_enhanced_auto_cat,
+    numeric_amount,
+)
+
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
@@ -54,47 +59,20 @@ def show_committee_reference():
     | 9 | Marketing | 18 | Formal |
     """)
 
-def classify_purpose(text: str) -> str | None:
-    """Classify purpose from transaction details."""
-    if not isinstance(text, str) or not text:
-        return None
-    s = text.lower().strip()
-    dues_keywords = ["dues", "due", "membership fee", "membership payment", "membership"]
-    return "Dues" if any(keyword in s for keyword in dues_keywords) else None
-
 def map_purpose_to_budget_id(purpose: str) -> int | None:
-    """Map purpose to committee ID. Only Dues (1) is auto-mapped."""
-    PURPOSE_MAP = {"Dues": 1}
+    """Map purpose to committee ID for legacy insert paths."""
+    PURPOSE_MAP = {
+        "Dues": 1,
+        "Refunded": 17,
+        "Formal": 18,
+        "Meeting Food": 8,
+        "Food & Drink": 5,
+        "Professional Development": 7,
+    }
     if not purpose or pd.isna(purpose):
         return None
     return PURPOSE_MAP.get(str(purpose).strip())
 
-def numeric_amount(x):
-    """Parse numeric amount from various formats."""
-    try:
-        if pd.isna(x):
-            return 0.0
-        s = str(x).replace('\u2032', '').replace('\u2019', '').replace('\xa0', ' ').replace('$', '')
-        s = re.sub(r'\s+', ' ', s).strip()
-        m = re.search(r'([+-]?)\s*([0-9]{1,3}(?:[,\d]*)(?:\.\d+)?)', s)
-        if not m:
-            return 0.0
-        return float(m.group(1) + m.group(2).replace(',', ''))
-    except:
-        return 0.0
-
-def clean_proc_df(df_proc: pd.DataFrame) -> pd.DataFrame:
-    """Clean processed dataframe by removing footer/empty rows."""
-    df = df_proc.copy()
-    df['amount'] = df['amount'].apply(lambda x: float(x) if pd.notna(x) else 0.0)
-    df['details'] = df.get('details', '').fillna('').astype(str).str.strip()
-    
-    no_date = df['transactiondate'].isna()
-    details_empty = df['details'].str.replace(r'[\|\-\s]+', '', regex=True) == ''
-    mask_footer = no_date & details_empty
-    mask_zero_blank = no_date & (df['amount'] == 0) & (df['details'].str.strip() == '')
-    
-    return df[~(mask_footer | mask_zero_blank)].reset_index(drop=True)
 
 def prepare_transaction_records(df_proc: pd.DataFrame, df_committees: pd.DataFrame) -> list:
     """Convert processed dataframe to transaction records with proper budget mapping."""
@@ -372,12 +350,8 @@ elif page == "📤 Upload Transactions":
                                 ~df_proc['details'].str.lower().str.contains('account statement', na=False, regex=False)
                             ].reset_index(drop=True)
 
-                            # Auto-classify purpose and budget
-                            df_proc['purpose'] = df_proc['details'].apply(classify_purpose)
-                            df_proc = clean_proc_df(df_proc)
-                            
-                            # Auto-fill budget for Dues - convert to labeled format
-                            df_proc['budget'] = df_proc['purpose'].apply(lambda p: '1 - Dues' if p == 'Dues' else '')
+                            # Auto-classify (legacy dues keywords + enhanced rules)
+                            df_proc = merge_legacy_and_enhanced_auto_cat(df_proc)
                             
                             st.subheader("Preview and Edit")
                             
@@ -454,10 +428,10 @@ elif page == "📤 Upload Transactions":
                                                     budget_id = int(budget_str.split('-')[0].strip())
                                                 else:
                                                     budget_id = int(budget_str)
-                                            except:
+                                            except Exception:
                                                 pass
-                                        elif r['purpose'] == 'Dues':
-                                            budget_id = 1
+                                        if budget_id is None:
+                                            budget_id = map_purpose_to_budget_id(r.get('purpose'))
                                         
                                         st.session_state.venmo_records.append({
                                             'transaction_date': r['transactiondate'].strftime('%Y-%m-%d') if pd.notna(r['transactiondate']) else None,
@@ -510,11 +484,7 @@ elif page == "📤 Upload Transactions":
                                 'account': 'Wells'
                             })
                             
-                            df_proc['purpose'] = df_proc['details'].apply(classify_purpose)
-                            df_proc = clean_proc_df(df_proc)
-                            
-                            # Auto-fill budget for Dues - convert to labeled format
-                            df_proc['budget'] = df_proc['purpose'].apply(lambda p: '1 - Dues' if p == 'Dues' else '')
+                            df_proc = merge_legacy_and_enhanced_auto_cat(df_proc)
                             
                             st.subheader("Preview and Edit")
                             
@@ -590,10 +560,10 @@ elif page == "📤 Upload Transactions":
                                                         budget_id = int(budget_str.split('-')[0].strip())
                                                     else:
                                                         budget_id = int(budget_str)
-                                                except:
+                                                except Exception:
                                                     pass
-                                            elif r['purpose'] == 'Dues':
-                                                budget_id = 1
+                                            if budget_id is None:
+                                                budget_id = map_purpose_to_budget_id(r.get('purpose'))
                                             
                                             st.session_state.checking_records.append({
                                                 'transaction_date': r['transactiondate'].strftime('%Y-%m-%d') if pd.notna(r['transactiondate']) else None,
