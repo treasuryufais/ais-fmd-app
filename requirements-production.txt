@@ -1,0 +1,6 @@
+# Production extras. NOT installed in the sandbox venv -- that is deliberate.
+# Installing these does not by itself enable production mode; AIS_FMD_ENV must
+# also be set to exactly "production".
+-r requirements.txt
+supabase>=2.15
+openai>=1.0

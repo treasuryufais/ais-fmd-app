@@ -1,0 +1,47 @@
+name: tests
+
+# The original repository had no CI and no tests. The categorization rules are
+# pure functions deciding where money is booked, which makes them both the
+# easiest and the most valuable thing to guard.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        # Deliberately the sandbox set: supabase and openai are NOT installed,
+        # so CI cannot reach an external service even if a test tried to.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Assert the sandbox has no network-capable clients
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          present = [m for m in ("openai", "supabase") if importlib.util.find_spec(m)]
+          if present:
+              sys.exit(f"network clients unexpectedly installed in CI: {present}")
+          print("confirmed: no supabase/openai in the test environment")
+          PY
