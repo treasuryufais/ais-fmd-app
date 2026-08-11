@@ -39,6 +39,8 @@ PAGES = [
     ("ais_fmd/views/Dashboard.py", "Dashboard", ":material/analytics:", auth.Role.MEMBER),
     ("ais_fmd/views/Transactions.py", "Transactions", ":material/table_rows:", auth.Role.MEMBER),
     ("ais_fmd/views/ReviewQueue.py", "Review Queue", ":material/rule:", auth.Role.TREASURER),
+    ("ais_fmd/views/Dues.py", "Dues", ":material/groups:", auth.Role.MEMBER),
+    ("ais_fmd/views/Reports.py", "Alerts & Reports", ":material/notifications:", auth.Role.MEMBER),
     ("ais_fmd/views/Reconciliation.py", "Reconciliation", ":material/balance:", auth.Role.MEMBER),
     ("ais_fmd/views/Treasury.py", "Treasury", ":material/account_balance:", auth.Role.TREASURER),
     ("ais_fmd/views/DataQuality.py", "Data Quality", ":material/health_and_safety:", auth.Role.TREASURER),

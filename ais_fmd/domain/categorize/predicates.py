@@ -73,7 +73,18 @@ COMMITTEE_PURPOSE: dict[int, str] = {
     18: "Formal",
 }
 
-_PURCHASE_MARKER = "purchase authorized on "
+# Real Wells Fargo descriptions pad with runs of spaces:
+#   "PURCHASE                    AUTHORIZED ON   05/17 MERCHANT ..."
+# The original literal "purchase authorized on " never matched a real statement,
+# so the embedded purchase date was never found, the weekday was always
+# "Unknown", and the Meeting Food rule could not fire at all. Whitespace is
+# collapsed before matching, and "RECURRING PAYMENT" is accepted alongside
+# "PURCHASE".
+_PURCHASE_RE = re.compile(
+    r"(?:purchase|recurring\s+payment)\s+authorized\s+on\s+(\d{1,2}/\d{1,2})",
+    re.I,
+)
+_WHITESPACE_RE = re.compile(r"\s+")
 _BAR_WORD_RE = re.compile(r"\b(bar|pub)\b")
 
 
@@ -116,14 +127,15 @@ def _assign(committee_id: int, rule: str, *, confidence: float, source: str = "r
 # --- Field helpers -----------------------------------------------------------
 
 def extract_purchase_date(details: object) -> str:
-    """The MM/DD that Wells Fargo embeds in 'PURCHASE AUTHORIZED ON 09/17 ...'."""
+    """
+    The MM/DD that Wells Fargo embeds in 'PURCHASE AUTHORIZED ON 09/17 ...'.
+
+    Returns "" when there is no embedded date.
+    """
     if not isinstance(details, str):
         return ""
-    lowered = details.lower()
-    if _PURCHASE_MARKER not in lowered:
-        return ""
-    start = lowered.find(_PURCHASE_MARKER) + len(_PURCHASE_MARKER)
-    return details[start : start + 5].strip()
+    match = _PURCHASE_RE.search(_WHITESPACE_RE.sub(" ", details))
+    return match.group(1) if match else ""
 
 
 def weekday_from_details(details: object, row_date: object) -> str:
@@ -135,15 +147,21 @@ def weekday_from_details(details: object, row_date: object) -> str:
     a Tuesday GBM grocery run frequently posts on Thursday.
     """
     date_text = extract_purchase_date(details)
-    if len(date_text) < 5:
+    if not date_text:
         return "Unknown"
     try:
         import pandas as pd
 
-        year = pd.to_datetime(row_date, errors="coerce")
-        if pd.isna(year):
+        anchor = pd.to_datetime(row_date, errors="coerce")
+        if pd.isna(anchor):
             return "Unknown"
-        parsed = datetime.strptime(f"{date_text}/{int(year.year)}", "%m/%d/%Y")
+        month, day = (int(part) for part in date_text.split("/"))
+        year = int(anchor.year)
+        # A purchase on 12/30 can post on 01/02 of the next year, so roll the
+        # year back when the embedded month is far ahead of the posting month.
+        if month - anchor.month > 6:
+            year -= 1
+        parsed = datetime(year, month, day)
         return parsed.strftime("%A")
     except (ValueError, TypeError):
         return "Unknown"

@@ -21,7 +21,12 @@ from ais_fmd import auth
 from ais_fmd.config.categories import BUDGETED_COMMITTEE_IDS, committee_name
 from ais_fmd.data import repositories as repo
 from ais_fmd.domain import budgets as budget_domain
-from ais_fmd.domain.terms import attach_semester, ordered_semesters, previous_semester
+from ais_fmd.domain.terms import (
+    attach_semester,
+    default_semester_index,
+    ordered_semesters,
+    previous_semester,
+)
 from ais_fmd.ui import charts, shell, theme
 
 auth.require(auth.Role.MEMBER)
@@ -43,7 +48,10 @@ if not semesters:
 
 st.sidebar.header("Filters")
 selected_semester = st.sidebar.selectbox(
-    "Semester", semesters, index=len(semesters) - 1, key="dash_semester"
+    "Semester",
+    semesters,
+    index=default_semester_index(bundle.transactions, bundle.terms),
+    key="dash_semester",
 )
 
 committee_options = ["All committees"] + [

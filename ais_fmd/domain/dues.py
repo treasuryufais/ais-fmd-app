@@ -1,0 +1,236 @@
+"""
+Module M7 -- dues and membership revenue.
+
+Dues were already special-cased in the categorizer (the $35 / $52.50 rule), but
+nothing ever reported on them. They are the organisation's most predictable
+income line and the one a treasurer is most often asked about: how many people
+have paid, how much is outstanding, and is collection tracking last year.
+
+Payer identity is recovered from the transfer description. Wells Fargo Zelle
+rows read "ZELLE FROM JANE DOE ON 07/08 REF # ...", and Venmo rows are
+pipe-joined with the sender in the third field.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from decimal import Decimal
+
+import pandas as pd
+
+from .categorize.predicates import DUES_AMOUNTS
+from .money import parse_amount
+from .terms import attach_semester, date_range_for_semester
+
+DUES_COMMITTEE_ID = 1
+
+# "ZELLE FROM JANE DOE ON 07/08 REF # ..."  /  "ZELLE FROM JANE DOE REF # ..."
+_ZELLE_PAYER = re.compile(
+    r"zelle\s+from\s+(.+?)\s+(?:on\s+\d{1,2}/\d{1,2}|ref\s*#)",
+    re.I,
+)
+_WHITESPACE = re.compile(r"\s+")
+
+
+def extract_payer(details: object) -> str | None:
+    """Best-effort payer name from a transfer description."""
+    if details is None:
+        return None
+    text = _WHITESPACE.sub(" ", str(details)).strip()
+
+    match = _ZELLE_PAYER.search(text)
+    if match:
+        name = match.group(1).strip(" .,-")
+        return name.title() if name else None
+
+    # Venmo: "txn id | note | from | to"
+    if "|" in text:
+        parts = [part.strip() for part in text.split("|")]
+        if len(parts) >= 3 and parts[2]:
+            return parts[2].title()
+
+    return None
+
+
+def dues_transactions(df_transactions: pd.DataFrame) -> pd.DataFrame:
+    """
+    Every transaction that looks like a dues payment.
+
+    Uses the stored committee assignment where present, and falls back to the
+    amount signature so payments that have not been categorized yet are still
+    counted -- otherwise the collection figure would understate reality purely
+    because someone has not worked the review queue.
+    """
+    if df_transactions.empty:
+        return df_transactions.assign(payer=pd.Series(dtype="object"))
+
+    frame = df_transactions.copy()
+    parsed = [parse_amount(value) for value in frame["amount"]]
+    frame["_amount"] = parsed
+
+    by_committee = frame["budget_category"] == DUES_COMMITTEE_ID
+    by_signature = pd.Series(
+        [
+            amount is not None and amount > 0 and any(amount == d for d in DUES_AMOUNTS)
+            for amount in parsed
+        ],
+        index=frame.index,
+    )
+
+    dues = frame[by_committee | by_signature].copy()
+    if dues.empty:
+        return dues.assign(payer=pd.Series(dtype="object"))
+
+    dues["payer"] = dues["details"].map(extract_payer)
+    dues["rate"] = [float(a) if a is not None else 0.0 for a in dues["_amount"]]
+    return dues.drop(columns=["_amount"])
+
+
+@dataclass
+class DuesSummary:
+    semester: str
+    total_collected: float
+    payment_count: int
+    unique_payers: int
+    rates: dict[float, int]
+    first_payment: pd.Timestamp | None
+    last_payment: pd.Timestamp | None
+
+    @property
+    def average_payment(self) -> float:
+        return self.total_collected / self.payment_count if self.payment_count else 0.0
+
+
+def summarize(
+    df_transactions: pd.DataFrame,
+    df_terms: pd.DataFrame,
+    semester: str,
+) -> DuesSummary:
+    dues = dues_transactions(df_transactions)
+    if dues.empty:
+        return DuesSummary(semester, 0.0, 0, 0, {}, None, None)
+
+    tagged = attach_semester(dues, df_terms)
+    scoped = tagged[tagged["Semester"] == semester]
+    if scoped.empty:
+        return DuesSummary(semester, 0.0, 0, 0, {}, None, None)
+
+    dates = pd.to_datetime(scoped["transaction_date"], errors="coerce")
+    rates = scoped["rate"].round(2).value_counts().to_dict()
+
+    return DuesSummary(
+        semester=semester,
+        total_collected=float(scoped["rate"].sum()),
+        payment_count=int(len(scoped)),
+        unique_payers=int(scoped["payer"].dropna().nunique()),
+        rates={float(k): int(v) for k, v in rates.items()},
+        first_payment=dates.min() if dates.notna().any() else None,
+        last_payment=dates.max() if dates.notna().any() else None,
+    )
+
+
+def collection_curve(
+    df_transactions: pd.DataFrame,
+    df_terms: pd.DataFrame,
+    semester: str,
+) -> pd.DataFrame:
+    """
+    Cumulative dues collected by day, indexed on days since the term started.
+
+    Indexing on elapsed days rather than calendar date is what makes two
+    semesters comparable on one axis.
+    """
+    columns = ["Day", "Date", "Collected", "Cumulative", "Payments"]
+    window = date_range_for_semester(df_terms, semester)
+    if window is None:
+        return pd.DataFrame(columns=columns)
+
+    dues = dues_transactions(df_transactions)
+    if dues.empty:
+        return pd.DataFrame(columns=columns)
+
+    tagged = attach_semester(dues, df_terms)
+    scoped = tagged[tagged["Semester"] == semester].copy()
+    if scoped.empty:
+        return pd.DataFrame(columns=columns)
+
+    start, _end = window
+    scoped["Date"] = pd.to_datetime(scoped["transaction_date"], errors="coerce")
+    scoped = scoped.dropna(subset=["Date"])
+    scoped["Day"] = (scoped["Date"] - start).dt.days
+
+    daily = (
+        scoped.groupby("Day", as_index=False)
+        .agg(Collected=("rate", "sum"), Payments=("rate", "size"), Date=("Date", "min"))
+        .sort_values("Day")
+    )
+    daily["Cumulative"] = daily["Collected"].cumsum()
+    return daily[columns]
+
+
+def compare_semesters(
+    df_transactions: pd.DataFrame,
+    df_terms: pd.DataFrame,
+    semesters: list[str],
+) -> pd.DataFrame:
+    """One row per semester, for a side-by-side view."""
+    rows = []
+    for semester in semesters:
+        summary = summarize(df_transactions, df_terms, semester)
+        rows.append(
+            {
+                "Semester": semester,
+                "Collected": summary.total_collected,
+                "Payments": summary.payment_count,
+                "Unique payers": summary.unique_payers,
+                "Average": round(summary.average_payment, 2),
+            }
+        )
+    return pd.DataFrame(
+        rows, columns=["Semester", "Collected", "Payments", "Unique payers", "Average"]
+    )
+
+
+def payer_roster(
+    df_transactions: pd.DataFrame,
+    df_terms: pd.DataFrame,
+    semester: str,
+) -> pd.DataFrame:
+    """
+    Who paid, how much, and when.
+
+    Multiple payments from one person are aggregated -- a member who pays the
+    instalment rate twice should appear once, having paid the full amount.
+    """
+    columns = ["Payer", "Paid", "Payments", "First payment"]
+    dues = dues_transactions(df_transactions)
+    if dues.empty:
+        return pd.DataFrame(columns=columns)
+
+    tagged = attach_semester(dues, df_terms)
+    scoped = tagged[tagged["Semester"] == semester].copy()
+    scoped = scoped[scoped["payer"].notna()]
+    if scoped.empty:
+        return pd.DataFrame(columns=columns)
+
+    scoped["Date"] = pd.to_datetime(scoped["transaction_date"], errors="coerce")
+    roster = (
+        scoped.groupby("payer", as_index=False)
+        .agg(Paid=("rate", "sum"), Payments=("rate", "size"), **{"First payment": ("Date", "min")})
+        .rename(columns={"payer": "Payer"})
+        .sort_values("Paid", ascending=False)
+    )
+    return roster[columns].reset_index(drop=True)
+
+
+def outstanding(collected_payers: int, expected_members: int) -> dict:
+    """Simple gap analysis against a roster size the treasurer supplies."""
+    expected = max(expected_members, 0)
+    paid = max(collected_payers, 0)
+    return {
+        "expected": expected,
+        "paid": paid,
+        "outstanding": max(expected - paid, 0),
+        "rate": (paid / expected * 100) if expected else 0.0,
+    }

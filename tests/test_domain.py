@@ -51,6 +51,42 @@ def test_semesters_are_ordered_chronologically(terms):
     assert ordered_semesters(terms) == ["Fall 2024", "Spring 2025", "Fall 2025"]
 
 
+def test_default_semester_skips_terms_with_no_data(terms, transactions):
+    """
+    Terms are usually defined a year ahead, so the newest defined term is often
+    empty. Opening a page on an empty term looks like the app is broken.
+    """
+    from ais_fmd.domain.terms import default_semester, default_semester_index
+
+    # `transactions` has nothing in Fall 2025 beyond Sept; the newest populated
+    # term is Fall 2025, not any later empty one.
+    assert default_semester(transactions, terms) == "Fall 2025"
+
+    later = pd.concat(
+        [
+            terms,
+            pd.DataFrame(
+                {
+                    "TermID": ["FA26"],
+                    "Semester": ["Fall 2026"],
+                    "start_date": ["2026-08-20"],
+                    "end_date": ["2026-12-12"],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    assert default_semester(transactions, later) == "Fall 2025"
+    assert default_semester_index(transactions, later) == 2
+
+
+def test_default_semester_falls_back_when_nothing_has_data(terms):
+    from ais_fmd.domain.terms import default_semester
+
+    empty = pd.DataFrame(columns=["transaction_date", "amount"])
+    assert default_semester(empty, terms) == "Fall 2025"
+
+
 def test_previous_semester(terms):
     assert previous_semester(terms, "Fall 2025") == "Spring 2025"
     assert previous_semester(terms, "Fall 2024") is None

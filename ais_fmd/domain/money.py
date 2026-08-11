@@ -85,6 +85,43 @@ def parse_amount(value: object) -> Decimal | None:
     return amount.quantize(CENTS, rounding=ROUND_HALF_UP)
 
 
+_STRICT_NUMBER = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+
+
+def is_amount_like(value: object) -> bool:
+    """
+    Strict test: is this cell *entirely* a money value?
+
+    `parse_amount` is deliberately permissive -- it searches for a number
+    anywhere in the text, which is right when extracting from a cell that may
+    carry stray currency symbols or whitespace.
+
+    That permissiveness is catastrophic when used to *identify* which column
+    holds the amount. A bank description like
+    "ZELLE FROM ... ON 07/08 REF # 0A50..." contains digits, so `parse_amount`
+    happily returns 7.00 and a description column scores as a perfect amount
+    column. Layout detection must use this instead.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, Decimal)):
+        return True
+    if isinstance(value, float):
+        return not (math.isnan(value) or math.isinf(value))
+
+    text = str(value)
+    for junk in _JUNK_CHARS:
+        text = text.replace(junk, "")
+    text = text.replace(",", "").strip()
+    if text.startswith("(") and text.endswith(")"):
+        text = text[1:-1].strip()
+    if not text:
+        return False
+    return bool(_STRICT_NUMBER.match(text))
+
+
 def to_float(value: Decimal | None) -> float | None:
     """Convert to float at the pandas/Plotly boundary, after quantisation."""
     if value is None:

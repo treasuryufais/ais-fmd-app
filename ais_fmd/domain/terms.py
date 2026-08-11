@@ -96,6 +96,44 @@ def ordered_semesters(df_terms: pd.DataFrame) -> list[str]:
     return terms["Semester"].dropna().tolist()
 
 
+def default_semester(
+    df_transactions: pd.DataFrame,
+    df_terms: pd.DataFrame,
+) -> str | None:
+    """
+    The semester a page should open on: the most recent one with data in it.
+
+    Defaulting to the last *defined* term lands the user on an empty page
+    whenever terms are defined ahead of time -- which is normal, since terms are
+    usually set up for the year in advance. The most recent term that actually
+    contains transactions is almost always what someone wants to see.
+    """
+    order = ordered_semesters(df_terms)
+    if not order:
+        return None
+    if df_transactions is None or df_transactions.empty:
+        return order[-1]
+
+    tagged = attach_semester(df_transactions, df_terms)
+    populated = set(tagged["Semester"].dropna().unique())
+    for semester in reversed(order):
+        if semester in populated:
+            return semester
+    return order[-1]
+
+
+def default_semester_index(
+    df_transactions: pd.DataFrame,
+    df_terms: pd.DataFrame,
+) -> int:
+    """Position of `default_semester` within `ordered_semesters`, for selectbox index."""
+    order = ordered_semesters(df_terms)
+    if not order:
+        return 0
+    target = default_semester(df_transactions, df_terms)
+    return order.index(target) if target in order else len(order) - 1
+
+
 def previous_semester(df_terms: pd.DataFrame, current: str) -> str | None:
     order = ordered_semesters(df_terms)
     if current not in order:
