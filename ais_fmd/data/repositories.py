@@ -199,6 +199,69 @@ def record_statement_balance(balance: dict, actor: str) -> UpdateResult:
     return result
 
 
+# --- Reimbursements, receipts, locking ---------------------------------------
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _reimbursements(version: int) -> pd.DataFrame:
+    return backend().fetch_reimbursements()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _receipts(version: int) -> pd.DataFrame:
+    return backend().fetch_receipts()
+
+
+def load_reimbursements() -> pd.DataFrame:
+    return _reimbursements(data_version())
+
+
+def load_receipts() -> pd.DataFrame:
+    return _receipts(data_version())
+
+
+def create_reimbursement(request: dict, actor: str) -> UpdateResult:
+    result = backend().create_reimbursement(request, actor)
+    if result.updated:
+        invalidate()
+    return result
+
+
+def decide_reimbursement(request_id: int, status: str, actor: str, note: str = "") -> UpdateResult:
+    result = backend().decide_reimbursement(request_id, status, actor, note)
+    if result.updated:
+        invalidate()
+    return result
+
+
+def link_reimbursement(request_id: int, transaction_id: int, actor: str) -> UpdateResult:
+    result = backend().link_reimbursement_to_transaction(request_id, transaction_id, actor)
+    if result.updated:
+        invalidate()
+    return result
+
+
+def store_receipt(receipt: dict, actor: str) -> tuple[int | None, UpdateResult]:
+    receipt_id, result = backend().store_receipt(receipt, actor)
+    if result.updated:
+        invalidate()
+    return receipt_id, result
+
+
+def set_term_lock(term_id: str, locked: bool, actor: str) -> UpdateResult:
+    result = backend().set_term_lock(term_id, locked, actor)
+    if result.updated:
+        invalidate()
+    return result
+
+
+def locked_semesters() -> set[str]:
+    """Names of terms currently closed to edits."""
+    terms = load_terms()
+    if terms.empty or "locked" not in terms.columns:
+        return set()
+    return set(terms[terms["locked"].fillna(0).astype(int) == 1]["Semester"].dropna())
+
+
 def is_file_uploaded(file_name: str) -> bool:
     frame = load_uploaded_files()
     if frame.empty or "file_name" not in frame.columns:

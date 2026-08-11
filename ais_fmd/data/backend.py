@@ -120,6 +120,42 @@ class Backend(ABC):
     @abstractmethod
     def record_statement_balance(self, balance: dict, actor: str) -> UpdateResult: ...
 
+    # --- Later modules -------------------------------------------------------
+    #
+    # Concrete rather than abstract so an implementation that predates these
+    # (SupabaseBackend) still constructs, and fails with a clear message at the
+    # point of use instead of at import.
+
+    def _unsupported(self, feature: str) -> UpdateResult:
+        return UpdateResult(
+            error=f"{feature} is not implemented for the {self.name} backend."
+        )
+
+    def fetch_reimbursements(self) -> pd.DataFrame:
+        raise NotImplementedError(f"{self.name} does not support reimbursements yet.")
+
+    def create_reimbursement(self, request: dict, actor: str) -> UpdateResult:
+        return self._unsupported("Reimbursement submission")
+
+    def decide_reimbursement(
+        self, request_id: int, status: str, actor: str, note: str = ""
+    ) -> UpdateResult:
+        return self._unsupported("Reimbursement approval")
+
+    def link_reimbursement_to_transaction(
+        self, request_id: int, transaction_id: int, actor: str
+    ) -> UpdateResult:
+        return self._unsupported("Reimbursement matching")
+
+    def fetch_receipts(self) -> pd.DataFrame:
+        raise NotImplementedError(f"{self.name} does not support receipts yet.")
+
+    def store_receipt(self, receipt: dict, actor: str) -> tuple[int | None, UpdateResult]:
+        return None, self._unsupported("Receipt storage")
+
+    def set_term_lock(self, term_id: str, locked: bool, actor: str) -> UpdateResult:
+        return self._unsupported("Period locking")
+
 
 def get_backend() -> Backend:
     """

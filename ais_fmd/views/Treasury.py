@@ -334,17 +334,71 @@ with tab_budgets:
 with tab_terms:
     terms = repo.load_terms()
     if not terms.empty:
+        view = terms.sort_values("start_date", ascending=False).copy()
+        view["Status"] = (
+            view["locked"].fillna(0).astype(int).map({1: "closed", 0: "open"})
+            if "locked" in view.columns
+            else "open"
+        )
         shell.dataframe(
-            terms.sort_values("start_date", ascending=False)[
-                ["TermID", "Semester", "start_date", "end_date"]
-            ].rename(
-                columns={
-                    "TermID": "Term ID",
-                    "start_date": "Start",
-                    "end_date": "End",
-                }
+            view[["TermID", "Semester", "start_date", "end_date", "Status"]].rename(
+                columns={"TermID": "Term ID", "start_date": "Start", "end_date": "End"}
             )
         )
+
+    # --- Period locking (M10) -----------------------------------------------
+
+    st.markdown("#### Close or reopen a term")
+    st.caption(
+        "Closing a term makes its transactions read-only — imports and edits "
+        "dated inside it are refused. The check lives in the data layer, so no "
+        "page can bypass it. Close a term once it has been reconciled and "
+        "reported, so a later edit cannot silently change a published figure."
+    )
+
+    if terms.empty:
+        shell.empty_state("No terms to close yet")
+    else:
+        lock_columns = st.columns([2, 1, 2])
+        with lock_columns[0]:
+            ordered = terms.sort_values("start_date", ascending=False)
+            semester_by_term = dict(zip(ordered["TermID"], ordered["Semester"]))
+            lock_target = st.selectbox(
+                "Term",
+                ordered["TermID"].tolist(),
+                format_func=lambda value: f"{value} — {semester_by_term.get(value, '')}",
+                key="lock_term",
+            )
+
+        currently_locked = False
+        if "locked" in terms.columns:
+            match = terms[terms["TermID"] == lock_target]
+            if not match.empty:
+                currently_locked = bool(int(match.iloc[0]["locked"] or 0))
+
+        with lock_columns[1]:
+            st.markdown("&nbsp;", unsafe_allow_html=True)
+            st.markdown(
+                shell.pill("closed" if currently_locked else "open",
+                           "over" if currently_locked else "on track"),
+                unsafe_allow_html=True,
+            )
+
+        with lock_columns[2]:
+            st.markdown("&nbsp;", unsafe_allow_html=True)
+            action = "Reopen term" if currently_locked else "Close term"
+            if st.button(action, key="toggle_lock", type="primary"):
+                result = repo.set_term_lock(lock_target, not currently_locked, identity.email)
+                if result.error:
+                    shell.error_state("Could not change the term", result.error)
+                else:
+                    st.success(
+                        f"{lock_target} is now "
+                        f"{'open' if currently_locked else 'closed'}."
+                    )
+                    st.rerun()
+
+    st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 
     st.markdown("#### Add a term")
     with st.form("term_form"):

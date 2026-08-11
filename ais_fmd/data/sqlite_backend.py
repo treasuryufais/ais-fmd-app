@@ -34,7 +34,12 @@ CREATE TABLE IF NOT EXISTS terms (
     TermID      TEXT PRIMARY KEY,
     Semester    TEXT,
     start_date  TEXT,
-    end_date    TEXT
+    end_date    TEXT,
+    -- Module M10: once a term is closed its transactions become read-only, so a
+    -- retroactive edit cannot silently change a figure already reported.
+    locked      INTEGER NOT NULL DEFAULT 0,
+    locked_at   TEXT,
+    locked_by   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS committeebudgets (
@@ -102,6 +107,44 @@ CREATE TABLE IF NOT EXISTS merchants (
     updated_at     TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Module M8: reimbursement requests.
+CREATE TABLE IF NOT EXISTS reimbursements (
+    request_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    requester       TEXT NOT NULL,
+    committee_id    INTEGER,
+    amount          REAL NOT NULL,
+    description     TEXT,
+    incurred_on     TEXT,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    submitted_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    decided_at      TEXT,
+    decided_by      TEXT,
+    decision_note   TEXT,
+    matched_transaction_id INTEGER,
+    receipt_id      INTEGER,
+    FOREIGN KEY (committee_id) REFERENCES committees (CommitteeID)
+);
+
+CREATE INDEX IF NOT EXISTS ix_reimbursements_status ON reimbursements (status);
+
+-- Module M9: receipt capture.
+CREATE TABLE IF NOT EXISTS receipts (
+    receipt_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_name      TEXT NOT NULL,
+    stored_path    TEXT NOT NULL,
+    content_type   TEXT,
+    byte_size      INTEGER,
+    uploaded_by    TEXT,
+    uploaded_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    transaction_id INTEGER,
+    request_id     INTEGER,
+    vendor         TEXT,
+    amount         REAL,
+    receipt_date   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS ix_receipts_txn ON receipts (transaction_id);
+
 -- Module M1: reconciliation inputs.
 CREATE TABLE IF NOT EXISTS statement_balances (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,7 +184,86 @@ class SqliteBackend(Backend):
         with self._connect() as connection:
             connection.execute("PRAGMA journal_mode = WAL")
             connection.executescript(SCHEMA)
+            self._migrate(connection)
             connection.commit()
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        """
+        Add columns introduced after a database was first created.
+
+        CREATE TABLE IF NOT EXISTS silently does nothing when the table already
+        exists, so new columns would be missing on any database created by an
+        earlier version.
+        """
+        additions = {
+            "terms": [
+                ("locked", "INTEGER NOT NULL DEFAULT 0"),
+                ("locked_at", "TEXT"),
+                ("locked_by", "TEXT"),
+            ],
+        }
+        for table, columns in additions.items():
+            existing = {
+                row["name"] for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            for name, definition in columns:
+                if name not in existing:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
+
+    # --- Period locking (M10) ------------------------------------------------
+
+    @staticmethod
+    def _locked_ranges(connection: sqlite3.Connection) -> list[tuple[str, str, str]]:
+        rows = connection.execute(
+            "SELECT Semester, start_date, end_date FROM terms WHERE locked = 1"
+        ).fetchall()
+        return [(row["Semester"], row["start_date"], row["end_date"]) for row in rows]
+
+    @staticmethod
+    def _locked_term_for(date_text: str | None, ranges: list[tuple[str, str, str]]) -> str | None:
+        """The locked term a date falls inside, if any."""
+        if not date_text:
+            return None
+        stamp = str(date_text)[:10]
+        for semester, start, end in ranges:
+            if start and end and str(start)[:10] <= stamp <= str(end)[:10]:
+                return semester
+        return None
+
+    def set_term_lock(self, term_id: str, locked: bool, actor: str) -> UpdateResult:
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT Semester, locked FROM terms WHERE TermID = ?", (term_id,)
+                ).fetchone()
+                if row is None:
+                    result.error = f"Term {term_id} does not exist."
+                    return result
+                if bool(row["locked"]) == locked:
+                    result.unchanged = 1
+                    return result
+
+                connection.execute(
+                    "UPDATE terms SET locked = ?, locked_at = CURRENT_TIMESTAMP, locked_by = ? "
+                    "WHERE TermID = ?",
+                    (1 if locked else 0, actor, term_id),
+                )
+                self._audit(
+                    connection,
+                    transaction_id=None,
+                    action="lock" if locked else "unlock",
+                    actor=actor,
+                    field=term_id,
+                    old_value="locked" if row["locked"] else "open",
+                    new_value="locked" if locked else "open",
+                )
+                connection.commit()
+                result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
 
     def _read(self, query: str, params: tuple = ()) -> pd.DataFrame:
         with self._connect() as connection:
@@ -232,6 +354,25 @@ class SqliteBackend(Backend):
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN")
+
+                # M10: refuse the whole import if any row lands in a closed
+                # period. Rejecting the batch rather than filtering it keeps the
+                # statement and the ledger in agreement -- a partial import would
+                # silently drop rows the treasurer believes were loaded.
+                locked = self._locked_ranges(connection)
+                if locked:
+                    blocked = {
+                        term
+                        for record in records
+                        if (term := self._locked_term_for(record.get("transaction_date"), locked))
+                    }
+                    if blocked:
+                        receipt.error = (
+                            f"{', '.join(sorted(blocked))} is closed. Reopen the term on "
+                            f"the Treasury page to import transactions dated inside it."
+                        )
+                        return receipt
+
                 inserted = 0
                 skipped = 0
                 for record in records:
@@ -274,9 +415,15 @@ class SqliteBackend(Backend):
                     else:
                         skipped += 1
 
+                # Accumulate rather than replace. A re-import legitimately adds
+                # zero rows, and OR REPLACE would rewrite the count to 0 --
+                # making a fully-imported statement look like it never loaded.
                 connection.execute(
-                    "INSERT OR REPLACE INTO uploaded_files "
-                    "(file_name, row_count, uploaded_by) VALUES (?, ?, ?)",
+                    "INSERT INTO uploaded_files (file_name, row_count, uploaded_by) "
+                    "VALUES (?, ?, ?) "
+                    "ON CONFLICT (file_name) DO UPDATE SET "
+                    "  row_count   = uploaded_files.row_count + excluded.row_count, "
+                    "  uploaded_at = CURRENT_TIMESTAMP",
                     (file_name, inserted, actor),
                 )
                 connection.commit()
@@ -304,14 +451,25 @@ class SqliteBackend(Backend):
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN")
+                locked = self._locked_ranges(connection)
                 for change in changes:
                     row = connection.execute(
-                        "SELECT purpose, budget_category FROM transactions "
+                        "SELECT purpose, budget_category, transaction_date FROM transactions "
                         "WHERE transactionid = ?",
                         (change.transaction_id,),
                     ).fetchone()
                     if row is None:
                         result.failed.append(change.transaction_id)
+                        continue
+
+                    # M10: a closed period is read-only.
+                    closed = self._locked_term_for(row["transaction_date"], locked)
+                    if closed:
+                        result.failed.append(change.transaction_id)
+                        result.error = (
+                            f"Some transactions fall in {closed}, which is closed. "
+                            f"Reopen the term before editing them."
+                        )
                         continue
 
                     current = {"purpose": row["purpose"], "budget_category": row["budget_category"]}
@@ -477,14 +635,165 @@ class SqliteBackend(Backend):
             result.error = f"{type(exc).__name__}: {exc}"
         return result
 
+    # --- Reimbursements (M8) -------------------------------------------------
+
+    def fetch_reimbursements(self) -> pd.DataFrame:
+        return self._read(
+            "SELECT * FROM reimbursements ORDER BY "
+            "CASE status WHEN 'pending' THEN 0 WHEN 'approved' THEN 1 ELSE 2 END, "
+            "submitted_at DESC"
+        )
+
+    def create_reimbursement(self, request: dict, actor: str) -> UpdateResult:
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "INSERT INTO reimbursements "
+                    "(requester, committee_id, amount, description, incurred_on, "
+                    " status, receipt_id) "
+                    "VALUES (?, ?, ?, ?, ?, 'pending', ?)",
+                    (
+                        request["requester"],
+                        request.get("committee_id"),
+                        float(request["amount"]),
+                        request.get("description"),
+                        request.get("incurred_on"),
+                        request.get("receipt_id"),
+                    ),
+                )
+                self._audit(
+                    connection,
+                    transaction_id=None,
+                    action="reimbursement_request",
+                    actor=actor,
+                    field=f"request {cursor.lastrowid}",
+                    new_value=f"{request['requester']} ${float(request['amount']):.2f}",
+                )
+                connection.commit()
+                result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def decide_reimbursement(
+        self, request_id: int, status: str, actor: str, note: str = ""
+    ) -> UpdateResult:
+        result = UpdateResult()
+        if status not in {"approved", "rejected", "paid", "pending"}:
+            result.error = f"Unknown status {status!r}."
+            return result
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT status FROM reimbursements WHERE request_id = ?", (request_id,)
+                ).fetchone()
+                if row is None:
+                    result.error = f"Request {request_id} does not exist."
+                    return result
+                if row["status"] == status:
+                    result.unchanged = 1
+                    return result
+
+                connection.execute(
+                    "UPDATE reimbursements SET status = ?, decided_at = CURRENT_TIMESTAMP, "
+                    "decided_by = ?, decision_note = ? WHERE request_id = ?",
+                    (status, actor, note or None, request_id),
+                )
+                self._audit(
+                    connection,
+                    transaction_id=None,
+                    action="reimbursement_decision",
+                    actor=actor,
+                    field=f"request {request_id}",
+                    old_value=row["status"],
+                    new_value=status,
+                )
+                connection.commit()
+                result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def link_reimbursement_to_transaction(
+        self, request_id: int, transaction_id: int, actor: str
+    ) -> UpdateResult:
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    "UPDATE reimbursements SET matched_transaction_id = ?, "
+                    "status = 'paid', decided_at = CURRENT_TIMESTAMP, decided_by = ? "
+                    "WHERE request_id = ?",
+                    (transaction_id, actor, request_id),
+                )
+                self._audit(
+                    connection,
+                    transaction_id=transaction_id,
+                    action="reimbursement_matched",
+                    actor=actor,
+                    field=f"request {request_id}",
+                    new_value=str(transaction_id),
+                )
+                connection.commit()
+                result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    # --- Receipts (M9) -------------------------------------------------------
+
+    def fetch_receipts(self) -> pd.DataFrame:
+        return self._read("SELECT * FROM receipts ORDER BY uploaded_at DESC")
+
+    def store_receipt(self, receipt: dict, actor: str) -> tuple[int | None, UpdateResult]:
+        """Record receipt metadata. The file itself is written by domain.receipts."""
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "INSERT INTO receipts "
+                    "(file_name, stored_path, content_type, byte_size, uploaded_by, "
+                    " transaction_id, request_id, vendor, amount, receipt_date) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        receipt["file_name"],
+                        receipt["stored_path"],
+                        receipt.get("content_type"),
+                        receipt.get("byte_size"),
+                        actor,
+                        receipt.get("transaction_id"),
+                        receipt.get("request_id"),
+                        receipt.get("vendor"),
+                        receipt.get("amount"),
+                        receipt.get("receipt_date"),
+                    ),
+                )
+                receipt_id = cursor.lastrowid
+                self._audit(
+                    connection,
+                    transaction_id=receipt.get("transaction_id"),
+                    action="receipt_attached",
+                    actor=actor,
+                    field=receipt["file_name"],
+                    new_value=str(receipt_id),
+                )
+                connection.commit()
+                result.updated = 1
+                return receipt_id, result
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+            return None, result
+
     # --- sandbox-only --------------------------------------------------------
 
     def reset(self) -> None:
         """Drop everything and rebuild. Sandbox convenience, no production analogue."""
         with self._connect() as connection:
             tables = [
-                "transaction_audit", "statement_balances", "merchants",
-                "uploaded_files", "transactions", "committeebudgets", "terms", "committees",
+                "receipts", "reimbursements", "transaction_audit", "statement_balances",
+                "merchants", "uploaded_files", "transactions", "committeebudgets",
+                "terms", "committees",
             ]
             for table in tables:
                 connection.execute(f"DROP TABLE IF EXISTS {table}")
@@ -508,7 +817,17 @@ def _columns_for(query: str) -> list[str]:
     """Column names for an empty result, so downstream code sees a stable shape."""
     known = {
         "committees": ["CommitteeID", "Committee_Name", "Committee_Type"],
-        "terms": ["TermID", "Semester", "start_date", "end_date"],
+        "terms": ["TermID", "Semester", "start_date", "end_date", "locked", "locked_at", "locked_by"],
+        "reimbursements": [
+            "request_id", "requester", "committee_id", "amount", "description",
+            "incurred_on", "status", "submitted_at", "decided_at", "decided_by",
+            "decision_note", "matched_transaction_id", "receipt_id",
+        ],
+        "receipts": [
+            "receipt_id", "file_name", "stored_path", "content_type", "byte_size",
+            "uploaded_by", "uploaded_at", "transaction_id", "request_id",
+            "vendor", "amount", "receipt_date",
+        ],
         "committeebudgets": ["committeebudgetid", "termid", "committeeid", "budget_amount"],
         "transactions": [
             "transactionid", "transaction_date", "amount", "details",

@@ -39,13 +39,17 @@ PAGES = [
     ("ais_fmd/views/Dashboard.py", "Dashboard", ":material/analytics:", auth.Role.MEMBER),
     ("ais_fmd/views/Transactions.py", "Transactions", ":material/table_rows:", auth.Role.MEMBER),
     ("ais_fmd/views/ReviewQueue.py", "Review Queue", ":material/rule:", auth.Role.TREASURER),
+    ("ais_fmd/views/Officer.py", "My Committee", ":material/badge:", auth.Role.OFFICER),
     ("ais_fmd/views/Dues.py", "Dues", ":material/groups:", auth.Role.MEMBER),
+    ("ais_fmd/views/Reimbursements.py", "Reimbursements", ":material/receipt_long:", auth.Role.MEMBER),
     ("ais_fmd/views/Reports.py", "Alerts & Reports", ":material/notifications:", auth.Role.MEMBER),
     ("ais_fmd/views/Reconciliation.py", "Reconciliation", ":material/balance:", auth.Role.MEMBER),
+    ("ais_fmd/views/Planner.py", "Scenario Planner", ":material/insights:", auth.Role.TREASURER),
     ("ais_fmd/views/Treasury.py", "Treasury", ":material/account_balance:", auth.Role.TREASURER),
     ("ais_fmd/views/DataQuality.py", "Data Quality", ":material/health_and_safety:", auth.Role.TREASURER),
     ("ais_fmd/views/AuditLog.py", "Audit Log", ":material/history:", auth.Role.TREASURER),
     ("ais_fmd/views/Assistant.py", "Assistant", ":material/smart_toy:", auth.Role.MEMBER),
+    ("ais_fmd/views/Runbook.py", "Runbook", ":material/menu_book:", auth.Role.MEMBER),
 ]
 
 identity = auth.current_user()
