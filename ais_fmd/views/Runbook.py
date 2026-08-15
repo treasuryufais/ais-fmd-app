@@ -130,8 +130,11 @@ Do these in order. Locking is last because it makes the period read-only.
         st.info("No terms are closed yet.")
 
 with problems:
+    # Raw string: the literal dollar figures below must reach the page as text.
+    # Two bare '$' in one markdown block make Streamlit read everything between
+    # them as LaTeX, which silently ate this whole troubleshooting section.
     st.markdown(
-        """
+        r"""
 #### When something breaks
 
 **A statement is rejected on import.**
@@ -140,10 +143,10 @@ identify. Open the CSV and check the header row against
 `ais_fmd/domain/parsers/wells_fargo.py`, which documents both layouts it accepts.
 This has happened before: the file that prompted the current parser had
 `DESCRIPTION` and `AMOUNT` in the opposite positions from what the old code
-assumed, and the old code imported every transaction as $0.00 without complaint.
+assumed, and the old code imported every transaction as \$0.00 without complaint.
 
 **Transactions import but the amounts look wrong.**
-Stop and do not categorize them. Check for $0.00 rows on the Data Quality page —
+Stop and do not categorize them. Check for \$0.00 rows on the Data Quality page —
 a cluster of them is the fingerprint of a misread column. Delete the import and
 fix the parser before continuing.
 

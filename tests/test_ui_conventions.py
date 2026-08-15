@@ -14,6 +14,7 @@ view prints money through a raw Streamlit text call instead.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -59,6 +60,51 @@ def test_money_is_never_printed_through_a_raw_streamlit_text_call(path: Path):
         f"{path.name} renders currency through a raw st.* text call at line(s) "
         f"{offenders}. Use shell.say(...) or shell.notify(...) so the dollar "
         f"signs are escaped, or Streamlit will read them as LaTeX."
+    )
+
+
+def _string_literals(node: ast.Call) -> list[str]:
+    """Every plain string literal passed to this call, including f-string parts."""
+    out: list[str] = []
+    for argument in node.args:
+        if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+            out.append(argument.value)
+        elif isinstance(argument, ast.JoinedStr):
+            out.extend(
+                part.value
+                for part in argument.values
+                if isinstance(part, ast.Constant) and isinstance(part.value, str)
+            )
+    return out
+
+
+@pytest.mark.parametrize("path", view_files(), ids=lambda p: p.name)
+def test_hardcoded_currency_literals_are_escaped(path: Path):
+    """
+    The gap the check above could not see.
+
+    `test_money_is_never_printed_through_a_raw_streamlit_text_call` only fires
+    when the money is *formatted* in the same call -- it keys on
+    `format_currency` and friends. A hand-typed "$0.00" in a prose block matches
+    none of those markers, so Runbook.py shipped a troubleshooting section with
+    two bare dollar signs in one `st.markdown`, and everything between them
+    rendered as an equation.
+
+    Two unescaped '$' in one literal is the trigger; one is harmless.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _is_streamlit_markdown_call(node):
+            continue
+        for text in _string_literals(node):
+            if len(re.findall(r"(?<!\\)\$", text)) >= 2:
+                offenders.append(node.lineno)
+
+    assert not offenders, (
+        f"{path.name} passes a literal with two or more unescaped '$' to a raw "
+        f"st.* markdown call at line(s) {offenders}. Streamlit reads the text "
+        f"between them as LaTeX. Use a raw string with \\$, or shell.say(...)."
     )
 
 

@@ -254,6 +254,23 @@ def set_term_lock(term_id: str, locked: bool, actor: str) -> UpdateResult:
     return result
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _labeled_examples(version: int) -> pd.DataFrame:
+    return backend().fetch_labeled_examples()
+
+
+def load_labeled_examples() -> pd.DataFrame:
+    """M19 training labels: ledger imports plus every review-queue decision."""
+    return _labeled_examples(data_version())
+
+
+def record_labels(examples: list[dict], actor: str) -> UpdateResult:
+    result = backend().insert_labeled_examples(examples, actor)
+    if result.updated:
+        invalidate()
+    return result
+
+
 def locked_semesters() -> set[str]:
     """Names of terms currently closed to edits."""
     terms = load_terms()

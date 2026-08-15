@@ -157,6 +157,41 @@ CREATE TABLE IF NOT EXISTS statement_balances (
     recorded_at     TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (account, period_start, period_end)
 );
+
+-- M19: human-assigned labels, and what the model had proposed at the time.
+--
+-- One table serves two jobs that are really the same job. A row imported from a
+-- past treasurer's ledger is a label with no model prediction; a decision made
+-- in the review queue is a label that also records what the model said. Keeping
+-- them together means "everything a human has ever decided" is one query, and
+-- agreement rate falls out of the rows where model_committee is not null.
+--
+-- `era` scopes features that do not survive an officer handover. Card numbers
+-- are the clear case: the 2022 ledger's cards (0319, 6570, 2949) belong to
+-- people who have since graduated, so a card weight fitted across all eras
+-- would be nonsense. Merchant and description patterns do transfer.
+CREATE TABLE IF NOT EXISTS labeled_examples (
+    label_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    source            TEXT NOT NULL,          -- 'ledger' | 'review' | 'spot-check'
+    source_ref        TEXT,                   -- workbook name, or similar
+    era               TEXT,                   -- e.g. '2022-2023'; scopes card features
+    transaction_id    INTEGER,                -- set when the label came from the queue
+    transaction_date  TEXT,
+    amount            REAL,
+    details           TEXT NOT NULL,
+    account           TEXT,
+    committee_id      INTEGER NOT NULL,
+    purpose           TEXT,
+    model_committee   INTEGER,                -- what scoring proposed, when known
+    model_confidence  REAL,
+    model_source      TEXT,
+    labeled_by        TEXT NOT NULL,
+    labeled_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+    natural_key       TEXT UNIQUE             -- dedupes re-imports of the same ledger row
+);
+
+CREATE INDEX IF NOT EXISTS idx_labeled_examples_source ON labeled_examples (source);
+CREATE INDEX IF NOT EXISTS idx_labeled_examples_committee ON labeled_examples (committee_id);
 """
 
 
@@ -335,6 +370,60 @@ class SqliteBackend(Backend):
                 "SELECT 1 FROM uploaded_files WHERE file_name = ?", (file_name,)
             ).fetchone()
         return row is not None
+
+    def fetch_labeled_examples(self) -> pd.DataFrame:
+        """M19: every label a human has assigned, from any source."""
+        return self._read("SELECT * FROM labeled_examples ORDER BY labeled_at, label_id")
+
+    def insert_labeled_examples(self, examples: list[dict], actor: str) -> UpdateResult:
+        """
+        Record human labels. Idempotent on `natural_key`, so re-importing the
+        same ledger adds nothing rather than inflating the training set with
+        duplicates -- which would silently over-weight whatever was re-imported.
+        """
+        result = UpdateResult()
+        if not examples:
+            return result
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN")
+                for example in examples:
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO labeled_examples (
+                            source, source_ref, era, transaction_id, transaction_date,
+                            amount, details, account, committee_id, purpose,
+                            model_committee, model_confidence, model_source,
+                            labeled_by, natural_key
+                        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        ON CONFLICT (natural_key) DO NOTHING
+                        """,
+                        (
+                            example.get("source", "review"),
+                            example.get("source_ref"),
+                            example.get("era"),
+                            example.get("transaction_id"),
+                            example.get("transaction_date"),
+                            example.get("amount"),
+                            example.get("details"),
+                            example.get("account"),
+                            int(example["committee_id"]),
+                            example.get("purpose"),
+                            example.get("model_committee"),
+                            example.get("model_confidence"),
+                            example.get("model_source"),
+                            example.get("labeled_by", actor),
+                            example.get("natural_key"),
+                        ),
+                    )
+                    if cursor.rowcount:
+                        result.updated += 1
+                    else:
+                        result.unchanged += 1
+                connection.commit()
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
 
     # --- writes --------------------------------------------------------------
 

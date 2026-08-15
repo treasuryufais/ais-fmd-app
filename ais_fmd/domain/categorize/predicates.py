@@ -62,6 +62,23 @@ NEVER_BAR_KEYWORDS: tuple[str, ...] = (
 
 CONSULTING_CARD_MARKER = "card 8408"
 
+# Debit cards assigned to specific officers, confirmed against treasury's
+# "Categorization Architecture" doc (the source spec this categorizer was
+# originally built from): Annalee (8313) and Grant (5718), both Membership.
+#
+# A transaction on one of these cards is that officer's committee spend BY
+# CARDHOLDER DEFAULT -- but only a default, not a certainty like the card
+# check in `rule_consulting`. Card issuance has been messy enough in practice
+# that meeting food has repeatedly been bought on the wrong person's card, so
+# this must never outrank `rule_meeting_food`: see the tier split below.
+# Treasury's own account of this ("we need to build in the logic that
+# sometimes people's cards were used to buy things for other committees")
+# means even this ordering is a best-effort default, not a closed case --
+# the Review Queue remains where a treasurer corrects the individual
+# exceptions this cannot see, and a recurring exception can be captured
+# permanently as a merchant-memory rule (which already outranks this).
+MEMBERSHIP_CARD_MARKERS: tuple[str, ...] = ("card 8313", "card 5718")
+
 MEETING_WEEKDAYS = frozenset({"Tuesday", "Wednesday"})
 
 COMMITTEE_PURPOSE: dict[int, str] = {
@@ -222,6 +239,21 @@ def rule_consulting(record: dict) -> Classification | None:
     return _assign(7, f"Consulting ('{CONSULTING_CARD_MARKER}')", confidence=1.0)
 
 
+def rule_membership_card(record: dict) -> Classification | None:
+    """
+    Officer-assigned card (8313 or 5718). See MEMBERSHIP_CARD_MARKERS.
+
+    Confidence is 0.9, not 1.0: unlike the card check in `rule_consulting`,
+    this is a default inferred from cardholder assignment, not a certainty --
+    and it is deliberately positioned to lose to `rule_meeting_food` (see the
+    tier split at the bottom of this module).
+    """
+    text = _text(record.get("details"))
+    if not any(marker in text for marker in MEMBERSHIP_CARD_MARKERS):
+        return None
+    return _assign(5, "Membership (officer card 8313/5718)", confidence=0.9)
+
+
 def rule_dues(record: dict) -> Classification | None:
     amount = parse_amount(record.get("amount"))
     if amount is None or amount <= 0:
@@ -257,21 +289,64 @@ def rule_membership_bar(record: dict) -> Classification | None:
     return _assign(5, "Membership (bar or liquor merchant)", confidence=0.85)
 
 
-# Documented priority order. First match wins.
-RULES: tuple[Callable[[dict], Classification | None], ...] = (
+# Rules keyed on an unambiguous marker: a card number, an exact dues amount, the
+# sign of a transfer. These are certainties, not guesses -- which is why they
+# outrank merchant memory (see `pipeline.categorize_records`).
+#
+# The spec is explicit about the strongest of them: "If Details contains
+# 'card 8408', categorize as Committee ID 7 immediately. Ignore all remaining
+# rules." A learned merchant mapping must not be able to override that.
+#
+# `rule_membership_card` is deliberately NOT here despite also being a card
+# check. Card 8408 (Consulting) is certain by design -- one person, one
+# purpose, per treasury's own account. Cards 8313/5718 (Membership) are not:
+# treasury confirmed meeting food has been bought on the wrong person's card
+# because of past card-issuance problems, so it belongs in the heuristic tier
+# below `rule_meeting_food`, not up here where nothing can override it.
+EXACT_RULES: tuple[Callable[[dict], Classification | None], ...] = (
     rule_refund,
     rule_formal,
     rule_consulting,
     rule_dues,
+)
+
+# Keyword, weekday, and card-default heuristics. Confident, but each beatable
+# by something more specific: a merchant mapping a human has confirmed
+# (runs ahead of this whole tier -- see `pipeline.categorize_records`), or,
+# within the tier, by a stronger heuristic listed first. Order matters here:
+# `rule_meeting_food` must run before `rule_membership_card` so that meeting
+# food bought on an officer's Membership card is still meeting food, not
+# reassigned to Membership by cardholder default.
+HEURISTIC_RULES: tuple[Callable[[dict], Classification | None], ...] = (
     rule_meeting_food,
+    rule_membership_card,
     rule_membership_bar,
 )
 
+# Documented priority order. First match wins.
+RULES: tuple[Callable[[dict], Classification | None], ...] = EXACT_RULES + HEURISTIC_RULES
 
-def classify_deterministic(record: dict) -> Classification:
-    """Apply every rule in priority order. Returns UNMATCHED if none fire."""
-    for rule in RULES:
+
+def _first_match(
+    record: dict, rules: tuple[Callable[[dict], Classification | None], ...]
+) -> Classification:
+    for rule in rules:
         result = rule(record)
         if result is not None:
             return result
     return UNMATCHED
+
+
+def classify_exact(record: dict) -> Classification:
+    """Only the unambiguous rules. Returns UNMATCHED if none fire."""
+    return _first_match(record, EXACT_RULES)
+
+
+def classify_heuristic(record: dict) -> Classification:
+    """Only the keyword/weekday rules. Returns UNMATCHED if none fire."""
+    return _first_match(record, HEURISTIC_RULES)
+
+
+def classify_deterministic(record: dict) -> Classification:
+    """Apply every rule in priority order. Returns UNMATCHED if none fire."""
+    return _first_match(record, RULES)

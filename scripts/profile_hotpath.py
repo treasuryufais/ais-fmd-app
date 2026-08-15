@@ -58,14 +58,18 @@ def main() -> int:
         merchants,
     )
 
-    print("\nDashboard sparkline loop (semester_totals per term):")
+    order = ordered_semesters(terms)
+
+    print("\nDashboard sparklines:")
+    timed(f"batched semester_totals_by_semester ({len(order)} terms)",
+          budgets.semester_totals_by_semester, tx, terms, order)
+
     start = time.perf_counter()
-    for s in ordered_semesters(terms):
+    for s in order:
         budgets.semester_totals(tx, terms, s)
         budgets.semester_totals(tx, terms, s)
     elapsed = (time.perf_counter() - start) * 1000
-    print(f"  {elapsed:8.1f} ms  {len(ordered_semesters(terms))} terms x 2 series"
-          f"{'  <-- SLOW' if elapsed > 250 else ''}")
+    print(f"  {elapsed:8.1f} ms  [superseded] one call per term x 2 series")
     return 0
 
 

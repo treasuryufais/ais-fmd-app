@@ -102,6 +102,59 @@ def test_consulting_card_rule():
     assert result.committee_id == 7
 
 
+def test_membership_officer_card_rule():
+    """
+    Card 8313 (Annalee) and card 5718 (Grant) are Membership by cardholder
+    assignment -- confirmed against treasury's "Categorization Architecture"
+    doc. A grocery run on that card is Membership even though nothing about
+    the merchant says so, the same way "card 8408" alone settles Consulting.
+    """
+    for card in ("8313", "5718"):
+        result = classify_deterministic(
+            {"amount": -20.58, "details": wells("PUBLIX GAINESVILLE", "10/26", card=card),
+             "account": "Wells Fargo"}
+        )
+        assert result.committee_id == 5, f"card {card} should resolve to Membership"
+        assert result.source == "rule"
+
+
+def test_membership_card_rule_does_not_fire_on_other_cards():
+    result = classify_deterministic(
+        {"amount": -20.58, "details": wells("PUBLIX GAINESVILLE", "10/26", card="1113"),
+         "account": "Wells Fargo"}
+    )
+    assert result.committee_id is None
+
+
+def test_meeting_food_wins_over_officer_card_default():
+    """
+    REGRESSION. Card 5718/8313 is Membership by default, but treasury reported
+    that meeting food has repeatedly been bought on the wrong person's card
+    due to card-issuance problems. A Tuesday/Wednesday food purchase on the
+    Membership card must stay Meeting Food, not flip to Membership.
+    """
+    record = {
+        "amount": -159.80,
+        "details": wells("PUBLIX SUPER MAR", "09/16", card="5718"),  # a Tuesday
+        "account": "Wells Fargo",
+        "transaction_date": "2025-09-18",
+    }
+    result = classify_deterministic(record)
+    assert result.committee_id == 8, "meeting-food timing must outrank the card default"
+
+
+def test_officer_card_default_still_fires_off_meeting_weekdays():
+    """The other half: outside the meeting-food window, the card default holds."""
+    record = {
+        "amount": -20.58,
+        "details": wells("PUBLIX GAINESVILLE", "10/26", card="5718"),  # a Saturday
+        "account": "Wells Fargo",
+        "transaction_date": "2025-10-28",
+    }
+    result = classify_deterministic(record)
+    assert result.committee_id == 5
+
+
 def test_meeting_food_runs_locally_without_a_model():
     """
     The original delegated this to the language model even though everything

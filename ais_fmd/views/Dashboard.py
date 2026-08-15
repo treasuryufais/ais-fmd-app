@@ -76,14 +76,11 @@ prior_totals = (
 history = budget_domain.historical_budget_vs_actual(
     bundle.transactions, bundle.budgets, bundle.terms, committee_filter
 )
-income_trend = [
-    budget_domain.semester_totals(bundle.transactions, bundle.terms, semester)["income"]
-    for semester in semesters
-]
-expense_trend = [
-    budget_domain.semester_totals(bundle.transactions, bundle.terms, semester)["expenses"]
-    for semester in semesters
-]
+trend = budget_domain.semester_totals_by_semester(
+    bundle.transactions, bundle.terms, semesters
+)
+income_trend = [trend[semester]["income"] for semester in semesters]
+expense_trend = [trend[semester]["expenses"] for semester in semesters]
 
 shell.metric_row(
     [

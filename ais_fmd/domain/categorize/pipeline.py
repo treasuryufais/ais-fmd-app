@@ -3,13 +3,24 @@ Categorization orchestration.
 
 The order is the whole point:
 
-    1. Merchant memory   -- free, instant, and the set grows with every correction
-    2. Deterministic rules -- free, exact, and covers the well-understood cases
-    3. The model          -- only what is genuinely left over
+    1. Exact rules       -- unambiguous markers: card number, exact dues amount,
+                            sign of a transfer. Certainties.
+    2. Merchant memory   -- free, instant, and the set grows with every correction
+    3. Heuristic rules   -- keyword and weekday guesses
+    4. The model         -- only what is genuinely left over
 
 The original ran the model *first*, over every transaction, and then overrode
 most of its answers with Python rules -- paying for answers it discarded. This
 inverts that.
+
+FINDING (ordering). Merchant memory used to run ahead of *all* the rules, which
+let a learned mapping override an exact one. Real data made the consequence
+concrete: two Publix purchases were made on the consulting card, so
+`rule_consulting` books them to Consulting -- correctly, and the spec is
+emphatic that "card 8408" wins and all remaining rules are ignored. A blanket
+"publix -> Meeting Food" mapping, the obvious thing for a treasurer to confirm
+in bulk, would silently have re-booked them. The exact rules now run first, so a
+merchant mapping can only fill in where the certainties are silent.
 """
 
 from __future__ import annotations
@@ -20,7 +31,12 @@ import pandas as pd
 
 from .llm import LLMOutcome, classify_residual
 from .merchants import MerchantMemory
-from .predicates import UNMATCHED, Classification, classify_deterministic
+from .predicates import (
+    UNMATCHED,
+    Classification,
+    classify_exact,
+)
+from .scoring import AUTO_APPLY_THRESHOLD, CardRegistry, ScoredResult, score
 
 
 @dataclass
@@ -29,6 +45,9 @@ class CategorizationRun:
 
     classifications: list[Classification] = field(default_factory=list)
     llm: LLMOutcome = field(default_factory=LLMOutcome)
+    # Scored results by row position, including ones held back as too uncertain
+    # to apply. The review queue reads these to show its reasoning.
+    proposals: dict[int, ScoredResult] = field(default_factory=dict)
 
     @property
     def total(self) -> int:
@@ -36,10 +55,19 @@ class CategorizationRun:
 
     @property
     def counts_by_source(self) -> dict[str, int]:
-        counts = {"merchant": 0, "rule": 0, "llm": 0, "none": 0}
+        counts = {"merchant": 0, "rule": 0, "scored": 0, "llm": 0, "none": 0}
         for item in self.classifications:
             counts[item.source] = counts.get(item.source, 0) + 1
         return counts
+
+    @property
+    def held_for_review(self) -> dict[int, ScoredResult]:
+        """Scored proposals that did not clear the threshold — the flagged outliers."""
+        return {
+            index: scored
+            for index, scored in self.proposals.items()
+            if not self.classifications[index].is_assigned
+        }
 
     @property
     def assigned(self) -> int:
@@ -60,39 +88,69 @@ class CategorizationRun:
     def summary_line(self) -> str:
         counts = self.counts_by_source
         return (
-            f"{self.total} transactions: {counts['merchant']} from merchant memory, "
-            f"{counts['rule']} by rule, {counts['llm']} by model, "
-            f"{counts['none']} left for review."
+            f"{self.total} transactions: {counts['rule']} by exact rule, "
+            f"{counts['scored']} by scoring, {counts['llm']} by model, "
+            f"{counts['none']} left for review "
+            f"({len(self.held_for_review)} of those carry a proposal)."
         )
 
 
 def categorize_records(
     records: list[dict],
     merchants: MerchantMemory | None = None,
+    *,
+    cards: CardRegistry | None = None,
+    threshold: float = AUTO_APPLY_THRESHOLD,
 ) -> CategorizationRun:
-    """Classify a list of transaction dicts."""
+    """
+    Classify a list of transaction dicts.
+
+    The scoring tier (M18) replaces what used to be a first-match-wins run
+    through the heuristic rules. A scored result is only accepted when its
+    confidence clears `threshold`; below that it is kept as a *proposal* --
+    committee, confidence and evidence intact -- and the row goes to the review
+    queue rather than being booked on a coin-flip. `run.proposals` carries those
+    so the queue can show its reasoning instead of an empty cell.
+    """
     memory = merchants or MerchantMemory()
+    registry = cards or CardRegistry()
     results: list[Classification] = [UNMATCHED] * len(records)
+    proposals: dict[int, ScoredResult] = {}
     residual: list[tuple[int, dict]] = []
 
     for index, record in enumerate(records):
+        # Certainties first: an exact dues amount, a transfer's sign, card 8408.
+        # These are unambiguous by construction and must not be outvoted.
+        exact = classify_exact(record)
+        if exact.is_assigned:
+            results[index] = exact
+            continue
+
+        # A merchant mapping is a human's explicit decision about this exact
+        # merchant, so it short-circuits rather than competing as a signal. As a
+        # signal it lost: a confirmed mapping and a full meeting-food reading
+        # scored close enough to flag each other, which would have sent a row a
+        # treasurer had already ruled on straight back into their queue.
         remembered = memory.lookup(record.get("details"))
         if remembered is not None:
             results[index] = remembered
             continue
 
-        deterministic = classify_deterministic(record)
-        if deterministic.is_assigned:
-            results[index] = deterministic
-            continue
+        scored = score(record, cards=registry)
+        if scored.winner is not None:
+            proposals[index] = scored
+            if scored.confidence >= threshold:
+                results[index] = scored.as_classification()
+                continue
 
+        # Unscored, or scored too close to call: a human or the model decides.
         residual.append((index, record))
 
     outcome = classify_residual(residual)
     for index, classification in outcome.classifications.items():
         results[index] = classification
 
-    return CategorizationRun(classifications=results, llm=outcome)
+    return CategorizationRun(classifications=results, llm=outcome, proposals=proposals)
 
 
 def categorize_frame(

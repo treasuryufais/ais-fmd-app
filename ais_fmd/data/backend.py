@@ -92,6 +92,17 @@ class Backend(ABC):
     @abstractmethod
     def fetch_statement_balances(self) -> pd.DataFrame: ...
 
+    def fetch_labeled_examples(self) -> pd.DataFrame:
+        """M19 training labels. Optional: backends without it report empty."""
+        raise NotImplementedError(
+            f"fetch_labeled_examples is not implemented for the {self.name} backend."
+        )
+
+    def insert_labeled_examples(self, examples: list[dict], actor: str) -> UpdateResult:
+        raise NotImplementedError(
+            f"insert_labeled_examples is not implemented for the {self.name} backend."
+        )
+
     # --- writes --------------------------------------------------------------
 
     @abstractmethod

@@ -110,8 +110,20 @@ def summarize(
     dues = dues_transactions(df_transactions)
     if dues.empty:
         return DuesSummary(semester, 0.0, 0, 0, {}, None, None)
+    return _summarize_tagged(attach_semester(dues, df_terms), semester)
 
-    tagged = attach_semester(dues, df_terms)
+
+def _summarize_tagged(tagged: pd.DataFrame, semester: str) -> DuesSummary:
+    """
+    `summarize` over an already-derived, already-tagged dues frame.
+
+    FINDING (performance). `compare_semesters` called `summarize` once per
+    semester, and each call re-derived the dues subset (a `parse_amount` per row
+    over the whole table) and re-tagged it. Both are loop-invariant.
+    """
+    if tagged.empty:
+        return DuesSummary(semester, 0.0, 0, 0, {}, None, None)
+
     scoped = tagged[tagged["Semester"] == semester]
     if scoped.empty:
         return DuesSummary(semester, 0.0, 0, 0, {}, None, None)
@@ -175,9 +187,12 @@ def compare_semesters(
     semesters: list[str],
 ) -> pd.DataFrame:
     """One row per semester, for a side-by-side view."""
+    dues = dues_transactions(df_transactions)
+    tagged = attach_semester(dues, df_terms) if not dues.empty else dues
+
     rows = []
     for semester in semesters:
-        summary = summarize(df_transactions, df_terms, semester)
+        summary = _summarize_tagged(tagged, semester)
         rows.append(
             {
                 "Semester": semester,

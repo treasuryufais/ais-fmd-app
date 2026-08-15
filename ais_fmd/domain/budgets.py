@@ -61,6 +61,25 @@ def budget_vs_actual(
     spend but no budget appear with Budget = 0 and a null % Spent rather than an
     infinity (FINDING F12).
     """
+    return _budget_vs_actual_tagged(
+        attach_semester(df_transactions, df_terms), df_budgets, df_terms, semester
+    )
+
+
+def _budget_vs_actual_tagged(
+    tagged: pd.DataFrame,
+    df_budgets: pd.DataFrame,
+    df_terms: pd.DataFrame,
+    semester: str,
+) -> pd.DataFrame:
+    """
+    `budget_vs_actual` over a frame that already carries a Semester column.
+
+    FINDING (performance). Tagging is O(rows), and `historical_budget_vs_actual`
+    calls this once per semester -- so the whole transactions table was tagged
+    once per term on every re-run. Splitting the tagging out lets the caller
+    hoist it out of its loop.
+    """
     columns = ["Committee_Name", "Budget", "Spent", "Remaining", "% Spent", "Status"]
     term_id = None
     if not df_terms.empty:
@@ -77,8 +96,7 @@ def budget_vs_actual(
             budgets = rows.groupby("Committee_Name", as_index=False)["budget_amount"].sum()
             budgets = budgets.rename(columns={"budget_amount": "Budget"})
 
-    scoped = attach_semester(df_transactions, df_terms)
-    scoped = scoped[scoped["Semester"] == semester]
+    scoped = tagged[tagged["Semester"] == semester]
     spending = spending_by_committee(scoped)
 
     combined = budgets.merge(spending, on="Committee_Name", how="outer")
@@ -119,8 +137,11 @@ def semester_totals(
     semester: str,
 ) -> dict[str, float]:
     """Headline figures for one semester."""
-    scoped = attach_semester(df_transactions, df_terms)
-    scoped = scoped[scoped["Semester"] == semester]
+    tagged = attach_semester(df_transactions, df_terms)
+    return _totals_for(tagged[tagged["Semester"] == semester])
+
+
+def _totals_for(scoped: pd.DataFrame) -> dict[str, float]:
     if scoped.empty:
         return {"income": 0.0, "expenses": 0.0, "net": 0.0, "count": 0}
 
@@ -134,31 +155,90 @@ def semester_totals(
     }
 
 
+def semester_totals_by_semester(
+    df_transactions: pd.DataFrame,
+    df_terms: pd.DataFrame,
+    semesters: list[str],
+) -> dict[str, dict[str, float]]:
+    """
+    `semester_totals` for many semesters, tagging the table exactly once.
+
+    The Dashboard's sparklines need a figure per semester, and computing them
+    one call at a time re-tagged the whole table on every iteration -- twice
+    over, since the income and expense series were built in separate
+    comprehensions that each recomputed the identical dict.
+    """
+    tagged = attach_semester(df_transactions, df_terms)
+    if tagged.empty:
+        return {semester: _totals_for(tagged) for semester in semesters}
+
+    groups = dict(list(tagged.groupby("Semester", sort=False)))
+    empty = tagged.iloc[0:0]
+    return {semester: _totals_for(groups.get(semester, empty)) for semester in semesters}
+
+
 def historical_budget_vs_actual(
     df_transactions: pd.DataFrame,
     df_budgets: pd.DataFrame,
     df_terms: pd.DataFrame,
     committee: str | None = None,
 ) -> pd.DataFrame:
-    """Budget and spend per semester, chronologically ordered."""
+    """
+    Budget and spend per semester, chronologically ordered.
+
+    FINDING (performance). This built a full per-committee `budget_vs_actual`
+    table for every semester and then threw all but two column sums away --
+    nine table builds, each with its own filter, groupby and merge, on every
+    dashboard re-run. Only the sums are needed, and a sum over an outer merge
+    of two per-committee tables equals the sum of each side taken separately
+    (every committee appears at most once on each side). So both sides are
+    aggregated in a single grouped pass instead.
+    """
     terms = prepare_terms(df_terms)
     if terms.empty:
         return pd.DataFrame(columns=["Semester", "Budget", "Spent", "% Spent"])
 
-    frames = []
-    for semester in terms["Semester"]:
-        rows = budget_vs_actual(df_transactions, df_budgets, df_terms, semester)
+    semesters = list(terms["Semester"])
+
+    # Budget side: one row per (term, committee), summed per semester.
+    budget_by_semester: dict[str, float] = {}
+    if not df_budgets.empty:
+        rows = df_budgets[df_budgets["committeeid"].isin(BUDGETED_COMMITTEE_IDS)]
         if committee:
-            rows = rows[rows["Committee_Name"] == committee]
-        frames.append(
+            rows = rows[_committee_names(rows["committeeid"]) == committee]
+        if not rows.empty:
+            # First-match semester -> TermID, mirroring the per-semester lookup.
+            term_ids = df_terms.drop_duplicates(subset=["Semester"]).set_index("Semester")["TermID"]
+            per_term = rows.groupby("termid")["budget_amount"].sum()
+            for semester in semesters:
+                term_id = term_ids.get(semester)
+                if term_id is not None:
+                    budget_by_semester[semester] = float(per_term.get(term_id, 0.0))
+
+    # Spend side: budgeted expenses only, summed per semester.
+    spent_by_semester: dict[str, float] = {}
+    tagged = attach_semester(df_transactions, df_terms)
+    if not tagged.empty:
+        expenses = tagged[
+            (tagged["amount"] < 0) & tagged["budget_category"].isin(BUDGETED_COMMITTEE_IDS)
+        ]
+        if committee:
+            expenses = expenses[_committee_names(expenses["budget_category"]) == committee]
+        if not expenses.empty:
+            spent_by_semester = (
+                expenses["amount"].abs().groupby(expenses["Semester"]).sum().to_dict()
+            )
+
+    out = pd.DataFrame(
+        [
             {
                 "Semester": semester,
-                "Budget": float(rows["Budget"].sum()) if not rows.empty else 0.0,
-                "Spent": float(rows["Spent"].sum()) if not rows.empty else 0.0,
+                "Budget": float(budget_by_semester.get(semester, 0.0)),
+                "Spent": float(spent_by_semester.get(semester, 0.0)),
             }
-        )
-
-    out = pd.DataFrame(frames)
+            for semester in semesters
+        ]
+    )
     out["% Spent"] = [
         safe_percent(spent, budget) for spent, budget in zip(out["Spent"], out["Budget"])
     ]
