@@ -4,8 +4,9 @@
 **Read this first.** Written to be self-contained — you should not need any prior
 conversation.
 
-**Last verified 2026-08-14:** 365 tests passing (1 skipped, ~55 s); app runs;
-892 real transactions; 590 human ground-truth labels.
+**Last verified 2026-08-15:** 429 tests passing (1 skipped); app runs; 892 real
+transactions; 590 human ground-truth labels; 0 spot-checks (see §5.1 — this is
+why no accuracy claim in here is verified).
 
 This document describes **what is true now**, not what happened when. Where a
 decision looks odd, the reason it is that way is given, because in almost every
@@ -45,6 +46,8 @@ cd C:\Users\durpy_7vdh2wz\ais-fmd-sandbox
 | `scripts/evaluate_categorizer.py [--fit]` | Accuracy per threshold/committee; `--fit` prints learned weights |
 | `scripts/profile_hotpath.py` | Times the work every page rerun does |
 | `scripts/verify_later_modules.py` | E2E check of locking/reimbursements/planner on a DB copy |
+| `scripts/verify_dues_schedule.py` | Proves per-term dues rates are behaviour-preserving on real data |
+| `scripts/spot_check.py [--apply CSV\|--report]` | Measures accuracy on auto-applied rows: sample → review CSV → `--apply` |
 
 ### The safety model — do not weaken this
 
@@ -293,6 +296,45 @@ yet** — the decision log is wired but only fills as the queue is worked. The
 fitted weights are informative (§6) but were **deliberately not swapped in**:
 the historical era differs in dues rates, cardholders and chart of accounts.
 
+### 5.1 Coverage is measured. Accuracy is not.
+
+Read the headline numbers in §2 carefully: 67.7% and 79.6% are **coverage** —
+how many rows got an answer. Nothing in this project measures how many of those
+answers were *right*, and the two are easy to conflate.
+
+The only accuracy figure that exists is against the 2022-23 ledger labels, and
+it is weak: **41.9% precision at the 0.75 gate**, with the harness reporting
+that *no* threshold reaches 95% on that set. That is cross-era, so it is not a
+verdict on today's accuracy — but the absence of a current-era number is the
+point. The app books real money against committees at an unmeasured error rate.
+
+It cannot be measured from the labels that exist, either. Every one came from a
+historical ledger or from a row the categorizer *flagged as uncertain*. Both are
+biased away from the confident majority, which is exactly the population in
+question. `Evaluation.selection_bias_warning()` reports this; reporting a gap
+does not close it.
+
+`domain/categorize/spotcheck.py` + `scripts/spot_check.py` close it. Sample →
+review CSV → `--apply`, the same propose/confirm discipline as
+`propose_merchants.py`. The sample is:
+
+* **stratified by tier and committee with a floor of one per stratum** — a
+  uniform draw would spend most of its budget on `rule`/Dues and might never
+  touch a rare committee, which is where a systematic misbooking survives
+  longest because nobody looks there;
+* **deterministic given `--seed`**, ranked by hashing each row's own identity,
+  so a review survives a pause, a resume, and new statements landing;
+* **largest-amount-first within each stratum**, then random for the rest — the
+  big rows are where an error costs most, the random ones are the only part that
+  supports an unbiased estimate.
+
+`--report` gives the agreement rate split by tier. `coverage_note()` says out
+loud when a sample is too small to be a measurement, because a 10-row check that
+reads like a statistic is worse than no check.
+
+**Nobody has run a round yet.** Until someone does, treat every accuracy claim
+about this categorizer as unverified.
+
 ---
 
 ## 6. What the evaluation harness found
@@ -449,8 +491,14 @@ calls. Nothing else on this list moves until these are answered.
 is data entry, not code: the mechanism landed (§4.1), the rates did not. Until
 then Data Quality correctly reports all 9 terms as unconfirmed.
 
-**P4 — Spot-check auto-applied rows** into `labeled_examples` with
-`source='spot-check'` so selection bias becomes measurable.
+**P4 — Run a spot-check round.** The tooling now exists
+(`scripts/spot_check.py`, §5.1); nobody has reviewed a sample with it yet.
+40 rows is roughly an hour and produces the first accuracy number this project
+has ever had for the rows it books without asking.
+
+```bash
+.venv/Scripts/python scripts/spot_check.py --size 40   # then review the CSV
+```
 
 **P5 — Re-run categorization over stored transactions.** The stored
 `budget_category` predates the scoring engine; a re-run resolves more. Needs a
