@@ -167,6 +167,11 @@ class Backend(ABC):
     def set_term_lock(self, term_id: str, locked: bool, actor: str) -> UpdateResult:
         return self._unsupported("Period locking")
 
+    def set_term_dues_rates(
+        self, term_id: str, rates: str, verified: bool, actor: str
+    ) -> UpdateResult:
+        return self._unsupported("Per-term dues rates")
+
 
 def get_backend() -> Backend:
     """

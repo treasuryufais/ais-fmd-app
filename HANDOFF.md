@@ -193,6 +193,47 @@ Seven other cards appear in the real data with **no documented owner**
 Meeting Food, but that is inferred from the categorizer's own past output, not
 verified. **Asking treasury who holds these is the cheapest available win.**
 
+### 4.1 Per-term dues rates
+
+`rule_dues` matched an exact amount against `DUES_AMOUNTS`, a module constant
+pinned to Fall 2024. Because the match is exact and the handbook shows the rate
+changing nearly every term, the first term after a change stopped categorizing
+dues **entirely and silently** — no error, the payments just fell to the queue.
+
+Rates are now data on the term:
+
+```
+terms.dues_rates           "35.00,52.50"  -- comma-separated, NULL = fall back
+terms.dues_rates_verified  0/1            -- 0 until a human confirms
+```
+
+* `predicates.DuesSchedule` — date → rates in force; pure Python, no pandas.
+* `dues.schedule_from_terms(df_terms)` — builds one from the terms table.
+* `categorize_records(..., dues=schedule)` / `categorize_frame(..., dues=)`.
+* Passing nothing falls back to `DUES_AMOUNTS`, so **every existing caller is
+  unchanged.** Verified byte-for-byte on all 892 real rows:
+  `scripts/verify_dues_schedule.py` reports 0 classifications changed.
+
+Two guards were added because the mechanism alone cannot prevent the failure —
+somebody still has to notice a rate changed:
+
+* `quality.check_unverified_dues_rates` — terms whose rates nobody confirmed.
+  Fires on all 9 terms today, by design: they hold a *copy of an assumption*.
+* `quality.check_possible_dues_rate_change` — three or more people sending the
+  same amount the schedule rejects. That is what a rate change looks like from
+  inside the data.
+
+**The second check found something on the real data.** 59 uncategorized incoming
+transfers worth **$1,870** sit at documented handbook rates, concentrated in
+Spring 2025 (27 × \$30, 9 × \$50 — exactly the handbook's "\$30/\$50" pair).
+They look like dues at an old rate, but that is treasury's call, not an
+inference to act on. See `docs/treasury-questions.md` §1.
+
+Venmo's fee is handled by `DuesSchedule(accept_venmo_net=True)` and is **off**.
+The three observed net amounts (24.43 / 29.34 / 39.14) do not fit one
+rate-plus-fee formula to the cent, so a bounded 3% window below gross is used
+rather than a fabricated exact formula.
+
 ---
 
 ## 5. The learning loop (M19 / M20)
@@ -265,8 +306,8 @@ four-tier pipeline says nothing about the pipeline.
 
 | Finding | Status |
 | --- | --- |
-| **`DUES_AMOUNTS` is pinned to Fall 2024 rates** `(35.00, 52.50)`. The VP Treasury Handbook shows rates change nearly every term ($20/$40 → $25/$40 → $30/$50 → $35/$52.50). **When the rate next changes, dues silently stop categorizing.** Belongs per-term beside the budget, not as a module constant. | **Open — changes how income is booked** |
-| **Venmo dues arrive net of fees** — historical amounts are `24.43`, `29.34`, `39.14` ($25/$30/$40 minus Venmo's cut). The rule tests exact equality, so Venmo dues are missed. Invisible today (Wells Fargo only); bites on the first Venmo import. | **Open** |
+| **`DUES_AMOUNTS` was pinned to Fall 2024 rates** `(35.00, 52.50)`. Rates are now per-term data (`terms.dues_rates`) via `DuesSchedule` — see §4.1. **The rates themselves are still unknown and still unverified**; every term carries a seeded copy of the old constant, marked unconfirmed. | **Mechanism fixed; rates still needed from treasury** |
+| **Venmo dues arrive net of fees** — historical amounts are `24.43`, `29.34`, `39.14` ($25/$30/$40 minus Venmo's cut). `DuesSchedule(accept_venmo_net=True)` handles it and is **off by default**, because booking net-of-fee income is a treasurer's call. | **Mechanism built, switched off — awaiting decision** |
 | **Outgoing reimbursements may be in the wrong bucket.** `rule_refund` books every negative Venmo/Zelle to committee 17 (Refunded), which is `kind="ledger"` and excluded from budget-vs-actual. The 2023 treasurer instead booked a reimbursement to *the committee whose expense it repaid*. 18 labeled rows disagree. If the old way was right, **committee budgets currently understate reimbursed spend.** | **Open — accounting decision** |
 | **`bar-merchant → Membership` is over-weighted** at 2.5; measured precision on historical labels is 38%. Largest confusion is `Membership → Consulting` (8 rows) — bar/restaurant spend on consulting projects. `salty dog saloon` is settled as **Consulting** across 10 human decisions. Learned weight: 0.00. | Open — recalibrate once current-era labels exist |
 | **`mobile deposit → Sponsorship / Donation`** (9 human decisions). Answers the long-open question about the $15,400 of unexplained deposits. | Evidence available, not applied |
@@ -281,8 +322,10 @@ These change financial meaning. **Do not decide them by inference.**
 `PURPOSE_TO_COMMITTEE` books "Professional Development" to committee 7
 (Consulting) and "Food & Drink" to 5 (Membership), while the reference table
 shown to treasurers says 7 is Consulting and 10 is Professional Development.
-Original behaviour preserved so historical figures do not shift. Data Quality
-shows how many transactions each affects (43 on real data). Decide, then edit
+Original behaviour preserved so historical figures do not shift. On the real
+data it is **89 transactions**, not the 43 stated in an earlier revision:
+Professional Development 7 rows / $1,391.98, Food & Drink 82 rows / $7,808.28.
+Food & Drink is by far the larger exposure. Decide, then edit
 `config/categories.py` and remove the entry from `DISPUTED_PURPOSE_MAPPINGS`.
 
 **7.2 — Deduplication semantics.** The rule is "do we already have this many of
@@ -396,12 +439,15 @@ fills merchant memory, and makes weight-fitting meaningful. Filter the queue to
 "Flagged: scored but uncertain" — those rows carry a proposal and its reasoning
 and take seconds each.
 
-**P2 — Ask treasury who holds the seven undocumented cards** (0153, 7757, 9309,
-3444, 7193, 1113, 5535). Converts inferred card signals into verified ones and
-is a single message.
+**P2 — Send `docs/treasury-questions.md`.** One message, five questions,
+already drafted with the numbers attached. It unblocks the dues rates (§4.1),
+the seven undocumented cards, the reimbursement accounting decision (which is
+roughly half of all measured error), the Venmo fee question, and two mapping
+calls. Nothing else on this list moves until these are answered.
 
-**P3 — Resolve the §6 open findings**, especially per-term dues rates. That one
-is a live time bomb: the next rate change silently breaks dues categorization.
+**P3 — Enter the dues rates once treasury answers**, in Treasury → Terms. This
+is data entry, not code: the mechanism landed (§4.1), the rates did not. Until
+then Data Quality correctly reports all 9 terms as unconfirmed.
 
 **P4 — Spot-check auto-applied rows** into `labeled_examples` with
 `source='spot-check'` so selection bias becomes measurable.

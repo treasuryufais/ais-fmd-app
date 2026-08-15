@@ -39,7 +39,15 @@ CREATE TABLE IF NOT EXISTS terms (
     -- retroactive edit cannot silently change a figure already reported.
     locked      INTEGER NOT NULL DEFAULT 0,
     locked_at   TEXT,
-    locked_by   TEXT
+    locked_by   TEXT,
+    -- Dues rates in force this term, as a comma-separated decimal list
+    -- ("35.00,52.50"). Previously a module constant pinned to Fall 2024, which
+    -- meant the first term after a rate change silently stopped categorizing
+    -- dues. NULL falls back to that constant.
+    dues_rates          TEXT,
+    -- 0 until a human confirms the rates are what the term actually charged.
+    -- Seeded rates are copies of the old constant, not evidence.
+    dues_rates_verified INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS committeebudgets (
@@ -236,6 +244,8 @@ class SqliteBackend(Backend):
                 ("locked", "INTEGER NOT NULL DEFAULT 0"),
                 ("locked_at", "TEXT"),
                 ("locked_by", "TEXT"),
+                ("dues_rates", "TEXT"),
+                ("dues_rates_verified", "INTEGER NOT NULL DEFAULT 0"),
             ],
         }
         for table, columns in additions.items():
@@ -293,6 +303,53 @@ class SqliteBackend(Backend):
                     field=term_id,
                     old_value="locked" if row["locked"] else "open",
                     new_value="locked" if locked else "open",
+                )
+                connection.commit()
+                result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def set_term_dues_rates(
+        self, term_id: str, rates: str, verified: bool, actor: str
+    ) -> UpdateResult:
+        """
+        Record the dues rates a term charged.
+
+        Audited like a lock change rather than written quietly: this decides
+        which incoming payments count as dues income, so who set it and what it
+        was before both need to survive.
+        """
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT dues_rates, dues_rates_verified FROM terms WHERE TermID = ?",
+                    (term_id,),
+                ).fetchone()
+                if row is None:
+                    result.error = f"Term {term_id} does not exist."
+                    return result
+
+                previous = row["dues_rates"]
+                was_verified = bool(row["dues_rates_verified"] or 0)
+                if _normalized(previous) == _normalized(rates) and was_verified == verified:
+                    result.unchanged = 1
+                    return result
+
+                connection.execute(
+                    "UPDATE terms SET dues_rates = ?, dues_rates_verified = ? "
+                    "WHERE TermID = ?",
+                    (rates or None, 1 if verified else 0, term_id),
+                )
+                self._audit(
+                    connection,
+                    transaction_id=None,
+                    action="dues_rates",
+                    actor=actor,
+                    field=term_id,
+                    old_value=f"{previous or '(none)'}{'' if was_verified else ' (unconfirmed)'}",
+                    new_value=f"{rates or '(none)'}{'' if verified else ' (unconfirmed)'}",
                 )
                 connection.commit()
                 result.updated = 1
@@ -906,7 +963,10 @@ def _columns_for(query: str) -> list[str]:
     """Column names for an empty result, so downstream code sees a stable shape."""
     known = {
         "committees": ["CommitteeID", "Committee_Name", "Committee_Type"],
-        "terms": ["TermID", "Semester", "start_date", "end_date", "locked", "locked_at", "locked_by"],
+        "terms": [
+            "TermID", "Semester", "start_date", "end_date", "locked", "locked_at",
+            "locked_by", "dues_rates", "dues_rates_verified",
+        ],
         "reimbursements": [
             "request_id", "requester", "committee_id", "amount", "description",
             "incurred_on", "status", "submitted_at", "decided_at", "decided_by",

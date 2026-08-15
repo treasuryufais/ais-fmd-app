@@ -26,6 +26,7 @@ from ais_fmd.config.categories import (
 )
 from ais_fmd.data import repositories as repo
 from ais_fmd.data.backend import TransactionChange
+from ais_fmd.domain import dues
 from ais_fmd.domain.categorize.merchants import merchant_key
 from ais_fmd.domain.categorize.pipeline import categorize_records
 from ais_fmd.domain.categorize.scoring import CURRENT_ERA
@@ -130,7 +131,7 @@ st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 # first imported.
 
 records = pending.to_dict("records")
-run = categorize_records(records, memory)
+run = categorize_records(records, memory, dues=dues.schedule_from_terms(repo.load_terms()))
 
 # A row the confidence gate held back has no classification, but it does have a
 # scored proposal — the committee the evidence favoured, how sure it was, and

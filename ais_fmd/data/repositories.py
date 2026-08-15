@@ -254,6 +254,16 @@ def set_term_lock(term_id: str, locked: bool, actor: str) -> UpdateResult:
     return result
 
 
+def set_term_dues_rates(
+    term_id: str, rates: str, verified: bool, actor: str
+) -> UpdateResult:
+    """Record what a term charged for dues. Invalidates so the schedule rebuilds."""
+    result = backend().set_term_dues_rates(term_id, rates, verified, actor)
+    if result.updated:
+        invalidate()
+    return result
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def _labeled_examples(version: int) -> pd.DataFrame:
     return backend().fetch_labeled_examples()

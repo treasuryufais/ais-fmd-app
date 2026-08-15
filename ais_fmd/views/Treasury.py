@@ -34,6 +34,7 @@ from ais_fmd.config.categories import (
     purpose_dropdown_options,
 )
 from ais_fmd.data import repositories as repo
+from ais_fmd.domain import dues
 from ais_fmd.domain.categorize.pipeline import categorize_frame
 from ais_fmd.domain.dedupe import split_new_and_duplicate
 from ais_fmd.domain.parsers import venmo, wells_fargo
@@ -141,7 +142,10 @@ with tab_upload:
 
                 # --- Categorize -------------------------------------------
                 memory = repo.load_merchant_memory()
-                categorized, run = categorize_frame(parsed.rows, memory)
+                # Per-term rates, so a statement from a term with its own dues
+                # rate is categorized against that rate and not a stale default.
+                schedule = dues.schedule_from_terms(repo.load_terms())
+                categorized, run = categorize_frame(parsed.rows, memory, dues=schedule)
 
                 counts = run.counts_by_source
                 summary_columns = st.columns(4)
@@ -340,11 +344,92 @@ with tab_terms:
             if "locked" in view.columns
             else "open"
         )
+        view["Dues rates"] = (
+            view["dues_rates"].fillna("—") if "dues_rates" in view.columns else "—"
+        )
+        view["Rates confirmed"] = (
+            view["dues_rates_verified"].fillna(0).astype(int).map({1: "yes", 0: "no"})
+            if "dues_rates_verified" in view.columns
+            else "no"
+        )
         shell.dataframe(
-            view[["TermID", "Semester", "start_date", "end_date", "Status"]].rename(
+            view[
+                ["TermID", "Semester", "start_date", "end_date", "Status",
+                 "Dues rates", "Rates confirmed"]
+            ].rename(
                 columns={"TermID": "Term ID", "start_date": "Start", "end_date": "End"}
             )
         )
+
+    # --- Per-term dues rates -------------------------------------------------
+
+    st.markdown("#### Dues rates for a term")
+    shell.say(
+        "Dues are matched on an exact amount. The rate has changed nearly every "
+        "term historically, and a term charging a rate the app does not know "
+        "about stops categorizing dues altogether — no error, the payments just "
+        "land in the review queue. Every term currently carries rates copied "
+        "from the old built-in default, marked unconfirmed until someone checks "
+        "them against what was actually charged."
+    )
+
+    if terms.empty:
+        shell.empty_state("No terms yet")
+    else:
+        ordered_terms = terms.sort_values("start_date", ascending=False)
+        semester_names = dict(zip(ordered_terms["TermID"], ordered_terms["Semester"]))
+        with st.form("dues_rates_form"):
+            rate_columns = st.columns([2, 2, 1])
+            with rate_columns[0]:
+                rate_term = st.selectbox(
+                    "Term",
+                    ordered_terms["TermID"].tolist(),
+                    format_func=lambda value: f"{value} — {semester_names.get(value, '')}",
+                    key="dues_rate_term",
+                )
+            current = ordered_terms[ordered_terms["TermID"] == rate_term]
+            existing = ""
+            already_confirmed = False
+            if not current.empty:
+                raw = current.iloc[0].get("dues_rates")
+                existing = "" if raw is None or pd.isna(raw) else str(raw)
+                flag = current.iloc[0].get("dues_rates_verified")
+                already_confirmed = bool(0 if flag is None or pd.isna(flag) else int(flag))
+            with rate_columns[1]:
+                entered = st.text_input(
+                    "Rates charged (comma separated)",
+                    value=existing,
+                    placeholder="35.00,52.50",
+                    key="dues_rate_values",
+                )
+            with rate_columns[2]:
+                st.markdown("&nbsp;", unsafe_allow_html=True)
+                confirmed = st.checkbox(
+                    "Confirmed", value=already_confirmed, key="dues_rate_confirmed"
+                )
+            if st.form_submit_button("Save rates", type="primary"):
+                parsed = dues.parse_rates(entered)
+                if entered.strip() and not parsed:
+                    shell.error_state(
+                        "Could not read those rates",
+                        "Enter amounts separated by commas, for example 35.00,52.50.",
+                    )
+                else:
+                    result = repo.set_term_dues_rates(
+                        rate_term,
+                        dues.format_rates(parsed) if parsed else "",
+                        confirmed,
+                        identity.email,
+                    )
+                    if result.error:
+                        shell.error_state("Could not save the rates", result.error)
+                    elif result.unchanged:
+                        shell.notify(f"{rate_term} already had those rates.")
+                    else:
+                        st.success(f"Saved dues rates for {rate_term}.")
+                        st.rerun()
+
+    st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 
     # --- Period locking (M10) -----------------------------------------------
 

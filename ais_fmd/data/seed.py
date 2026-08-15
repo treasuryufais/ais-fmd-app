@@ -39,6 +39,12 @@ TERMS = [
     ("SP26", "Spring 2026", date(2026, 1, 5), date(2026, 5, 1)),
 ]
 
+# Seeded from the constant `rule_dues` used before rates became per-term data,
+# and deliberately left marked unverified: these are a copy of an assumption,
+# not a record of what any term charged. `quality.check_unverified_dues_rates`
+# surfaces them until a treasurer confirms each one.
+SEED_DUES_RATES = "35.00,52.50"
+
 # Tuned so a realistic mix results: most committees on track, one or two
 # approaching, and one genuinely over -- so the semantic chart colouring has
 # every state to show.
@@ -342,9 +348,13 @@ def seed(backend: SqliteBackend | None = None, *, reset: bool = True) -> dict:
             [(c.id, c.name, "committee" if c.kind == "committee" else "ledger") for c in COMMITTEES],
         )
         connection.executemany(
-            "INSERT OR REPLACE INTO terms (TermID, Semester, start_date, end_date) "
-            "VALUES (?, ?, ?, ?)",
-            [(t[0], t[1], t[2].isoformat(), t[3].isoformat()) for t in TERMS],
+            "INSERT OR REPLACE INTO terms "
+            "(TermID, Semester, start_date, end_date, dues_rates, dues_rates_verified) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            [
+                (t[0], t[1], t[2].isoformat(), t[3].isoformat(), SEED_DUES_RATES)
+                for t in TERMS
+            ],
         )
         connection.commit()
 

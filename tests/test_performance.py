@@ -111,9 +111,9 @@ def test_dues_compare_semesters_derives_dues_subset_once(
     calls: list[int] = []
     original = dues.dues_transactions
 
-    def counting(df):
+    def counting(df, schedule=None):
         calls.append(len(df))
-        return original(df)
+        return original(df, schedule)
 
     monkeypatch.setattr(dues, "dues_transactions", counting)
     dues.compare_semesters(sample_transactions, sample_terms, ordered_semesters(sample_terms))

@@ -10,6 +10,7 @@ so the UI can rank them and link to the affected rows.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 
 import pandas as pd
 
@@ -22,9 +23,17 @@ from ..config.categories import (
     committee_name,
     legacy_account_values,
 )
+from .categorize.predicates import is_venmo_or_zelle
 from .dedupe import identity_tuple
+from .dues import schedule_from_terms
+from .money import parse_amount
 
 SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+# How many people must send the same unrecognised amount before it reads as a
+# rate rather than a coincidence. Two is too low -- a pair of members splitting
+# an odd reimbursement would trip it.
+DUES_RATE_CHANGE_MIN_PAYERS = 3
 
 
 @dataclass
@@ -58,6 +67,8 @@ def run_all_checks(
         check_duplicate_candidates,
         check_transactions_outside_terms,
         check_disputed_mappings,
+        check_unverified_dues_rates,
+        check_possible_dues_rate_change,
     ):
         try:
             issue = check(df_transactions, df_budgets, df_terms)
@@ -285,6 +296,111 @@ def check_disputed_mappings(df_transactions, df_budgets, df_terms) -> Issue | No
         ),
         count=affected,
         rows=rows,
+    )
+
+
+def check_unverified_dues_rates(df_transactions, df_budgets, df_terms) -> Issue | None:
+    """
+    Terms whose dues rates nobody has confirmed.
+
+    Dues rates were a module constant pinned to Fall 2024 and are now per-term
+    data, but every term was seeded with a *copy* of that constant. A copy is not
+    evidence, and this is the difference between "we know" and "we assumed".
+    """
+    if df_terms is None or df_terms.empty or "dues_rates_verified" not in df_terms.columns:
+        return _no_issue()
+    flag = pd.to_numeric(df_terms["dues_rates_verified"], errors="coerce").fillna(0)
+    unverified = df_terms[flag.astype(int) == 0]
+    if unverified.empty:
+        return _no_issue()
+
+    names = ", ".join(str(s) for s in unverified["Semester"].dropna().head(12))
+    return Issue(
+        code="unverified_dues_rates",
+        severity="medium",
+        title="Terms with unconfirmed dues rates",
+        detail=(
+            "Dues are matched on an exact amount, so a term charging a rate the "
+            "app does not know about stops categorizing dues entirely -- with no "
+            "error, the payments simply fall to the review queue. These terms "
+            "carry rates seeded from the old Fall 2024 constant rather than "
+            "confirmed against what was actually charged.\n\n"
+            f"Unconfirmed: {names}"
+        ),
+        count=len(unverified),
+        rows=unverified.head(200),
+    )
+
+
+def check_possible_dues_rate_change(df_transactions, df_budgets, df_terms) -> Issue | None:
+    """
+    Repeated incoming transfers at one amount that the dues schedule rejects.
+
+    This is the alarm for the failure the per-term schedule cannot prevent on its
+    own: rates change, nobody updates the app, and dues income silently stops
+    being recognised. Several people paying the *same* unrecognised amount by
+    Zelle or Venmo is what a rate change looks like from inside the data.
+    """
+    if df_transactions is None or df_transactions.empty:
+        return _no_issue()
+    needed = {"amount", "details", "transaction_date"}
+    if not needed.issubset(df_transactions.columns):
+        return _no_issue()
+
+    schedule = schedule_from_terms(df_terms if df_terms is not None else pd.DataFrame())
+    frame = df_transactions.copy()
+    amounts = [parse_amount(value) for value in frame["amount"]]
+    dates = pd.to_datetime(frame["transaction_date"], errors="coerce")
+    accounts = (
+        frame["account"] if "account" in frame.columns else pd.Series([None] * len(frame))
+    )
+
+    candidates: list[tuple[Decimal, int]] = []
+    for position, (amount, when, details, account) in enumerate(
+        zip(amounts, dates, frame["details"], accounts)
+    ):
+        if amount is None or amount <= 0:
+            continue
+        if not is_venmo_or_zelle(details, account):
+            continue
+        if schedule.matches(amount, None if pd.isna(when) else when.date()):
+            continue
+        candidates.append((amount, position))
+
+    if not candidates:
+        return _no_issue()
+
+    by_amount: dict[Decimal, list[int]] = {}
+    for amount, position in candidates:
+        by_amount.setdefault(amount, []).append(position)
+
+    # One person sending an odd number is noise; several sending the same odd
+    # number is a rate.
+    clusters = {
+        amount: positions
+        for amount, positions in by_amount.items()
+        if len(positions) >= DUES_RATE_CHANGE_MIN_PAYERS
+    }
+    if not clusters:
+        return _no_issue()
+
+    ranked = sorted(clusters.items(), key=lambda item: -len(item[1]))
+    lines = [
+        f"{len(positions)} payments of {amount:.2f}" for amount, positions in ranked[:8]
+    ]
+    affected = sorted({p for positions in clusters.values() for p in positions})
+    return Issue(
+        code="possible_dues_rate_change",
+        severity="high",
+        title="Repeated incoming transfers at an amount dues does not recognise",
+        detail=(
+            "Multiple people sent the same amount by Venmo or Zelle and the dues "
+            "schedule rejected all of them. The usual cause is a rate change the "
+            "app was never told about. Confirm the term's rates and set them on "
+            "the term, or dismiss these as non-dues income.\n\n" + "\n".join(lines)
+        ),
+        count=len(affected),
+        rows=df_transactions.iloc[affected].head(200),
     )
 
 

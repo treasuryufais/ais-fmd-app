@@ -23,8 +23,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
+from functools import partial
 from typing import Callable
 
 from ...config.categories import (
@@ -36,7 +37,121 @@ from ..money import equals_any, parse_amount
 
 # --- Reference data ----------------------------------------------------------
 
+# The rates in force when this categorizer was written (Fall 2024). These remain
+# the fallback for any caller that supplies no `DuesSchedule`, so behaviour is
+# bit-for-bit unchanged unless per-term rates are actually provided.
 DUES_AMOUNTS: tuple[Decimal, ...] = (Decimal("35.00"), Decimal("52.50"))
+
+# Venmo takes a cut, so dues paid over Venmo arrive NET of fees. The three
+# historical amounts on record are 24.43, 29.34 and 39.14 against gross rates of
+# $25, $30 and $40 -- shortfalls of 2.28%, 2.20% and 2.15%.
+#
+# Those three points do NOT fit one rate-plus-fixed-fee formula to the cent
+# (solving from the $25 and $40 pairs predicts 0.67 for $30 where the observed
+# fee is 0.66), so the exact schedule Venmo applied cannot be recovered from the
+# data available. A bounded window below the gross rate is therefore the honest
+# model: a fee can only ever reduce the amount received, and 3% clears all three
+# observations with margin while staying far below the gap to the next rate.
+VENMO_FEE_TOLERANCE: Decimal = Decimal("0.03")
+
+
+@dataclass(frozen=True)
+class DuesWindow:
+    """The dues rates in force for one term."""
+
+    term_id: str
+    semester: str
+    start: date
+    end: date
+    rates: tuple[Decimal, ...]
+    # False means "nobody has confirmed these are the rates that term actually
+    # charged" -- they were seeded from the old module constant. Surfaced by
+    # `quality.check_unverified_dues_rates` rather than assumed correct.
+    verified: bool = False
+
+
+class DuesSchedule:
+    """
+    Which dues amounts are valid, and when.
+
+    `DUES_AMOUNTS` was a module constant pinned to Fall 2024. The VP Treasury
+    Handbook shows the rate changing nearly every term ($20/$40 -> $25/$40 ->
+    $30/$50 -> $35/$52.50), and because `rule_dues` tests *exact* equality, the
+    first term after a rate change silently stops categorizing dues altogether:
+    no error is raised, the rows simply fall through to the review queue and
+    dues income appears to collapse. Rates belong beside the term, as data.
+
+    An empty schedule behaves exactly like the old constant, which is what every
+    caller that passes nothing continues to get.
+    """
+
+    def __init__(
+        self,
+        windows: "tuple[DuesWindow, ...] | list[DuesWindow]" = (),
+        *,
+        default_rates: tuple[Decimal, ...] = DUES_AMOUNTS,
+        accept_venmo_net: bool = False,
+        venmo_fee_tolerance: Decimal = VENMO_FEE_TOLERANCE,
+    ) -> None:
+        self._windows = tuple(sorted(windows, key=lambda w: w.start))
+        self._default_rates = tuple(default_rates)
+        # OFF by default: accepting net-of-fee amounts books income that exact
+        # matching would leave for a human, and that is a treasurer's call.
+        # See HANDOFF section 4.1 / docs/treasury-questions.md.
+        self._accept_venmo_net = accept_venmo_net
+        self._venmo_fee_tolerance = venmo_fee_tolerance
+
+    def __bool__(self) -> bool:
+        return bool(self._windows)
+
+    # Read-only throughout: `dues.schedule_from_terms` memoizes and hands the
+    # same instance to every caller, so a settable flag here would let one page
+    # silently change how another page books income.
+    @property
+    def windows(self) -> tuple[DuesWindow, ...]:
+        return self._windows
+
+    @property
+    def accept_venmo_net(self) -> bool:
+        return self._accept_venmo_net
+
+    @property
+    def venmo_fee_tolerance(self) -> Decimal:
+        return self._venmo_fee_tolerance
+
+    def window_for(self, when: date | None) -> DuesWindow | None:
+        if when is None:
+            return None
+        for window in self._windows:
+            if window.start <= when <= window.end:
+                return window
+        return None
+
+    def rates_for(self, when: date | None) -> tuple[Decimal, ...]:
+        """
+        Rates in force on `when`, falling back to the default.
+
+        Falling back rather than returning nothing is deliberate: a transaction
+        dated outside every configured term must not silently stop being dues.
+        """
+        window = self.window_for(when)
+        if window is None or not window.rates:
+            return self._default_rates
+        return window.rates
+
+    def matches(self, amount: Decimal, when: date | None, *, is_venmo: bool = False) -> bool:
+        """Does `amount` look like a dues payment made on `when`?"""
+        rates = self.rates_for(when)
+        if equals_any(amount, rates):
+            return True
+        if not (self.accept_venmo_net and is_venmo):
+            return False
+        # A fee only ever reduces what arrives, so the window is one-sided.
+        return any(
+            gross * (Decimal(1) - self.venmo_fee_tolerance) <= amount < gross
+            for gross in rates
+        )
+
 
 FOOD_MERCHANT_KEYWORDS: tuple[str, ...] = (
     "publix", "piesanos", "chipotle", "panda express", "chick-fil-a", "chick fil a",
@@ -198,6 +313,45 @@ def is_venmo_or_zelle(details: object, account: object) -> bool:
     return "venmo" in text or "zelle" in text or canonical == ACCOUNT_VENMO
 
 
+def is_venmo(details: object, account: object) -> bool:
+    """
+    Venmo specifically, not Zelle.
+
+    Only Venmo takes a cut, so only Venmo rows are eligible for net-of-fee dues
+    matching. Zelle transfers arrive whole.
+    """
+    canonical = normalize_account(account if account is None else str(account))
+    return "venmo" in _text(details) or canonical == ACCOUNT_VENMO
+
+
+def record_date(record: dict) -> date | None:
+    """
+    The transaction's own date, for schedule lookups.
+
+    Distinct from the purchase date `rule_meeting_food` digs out of the
+    description: that one is needed for the weekday, this one for "which term
+    was this in". Accepts the ISO strings SQLite stores, datetimes, and
+    anything with a `.date()`.
+    """
+    value = record.get("transaction_date")
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    to_date = getattr(value, "date", None)  # pandas.Timestamp and friends
+    if callable(to_date):
+        try:
+            return to_date()
+        except (TypeError, ValueError):
+            return None
+    try:
+        return datetime.fromisoformat(str(value)[:10]).date()
+    except ValueError:
+        return None
+
+
 def looks_like_bar(details: object) -> bool:
     text = _text(details)
     if _has_any(text, NEVER_BAR_KEYWORDS):
@@ -254,15 +408,33 @@ def rule_membership_card(record: dict) -> Classification | None:
     return _assign(5, "Membership (officer card 8313/5718)", confidence=0.9)
 
 
-def rule_dues(record: dict) -> Classification | None:
+def rule_dues(record: dict, schedule: DuesSchedule | None = None) -> Classification | None:
+    """
+    An exact dues amount arriving by Venmo or Zelle.
+
+    `schedule` supplies the rates in force for the transaction's term. Omitting
+    it falls back to `DUES_AMOUNTS`, which is what the rule did before rates
+    became per-term data.
+    """
     amount = parse_amount(record.get("amount"))
     if amount is None or amount <= 0:
         return None
-    if not equals_any(amount, DUES_AMOUNTS):
+    details, account = record.get("details"), record.get("account")
+    if not is_venmo_or_zelle(details, account):
         return None
-    if not is_venmo_or_zelle(record.get("details"), record.get("account")):
+
+    if schedule is None:
+        if not equals_any(amount, DUES_AMOUNTS):
+            return None
+        return _assign(1, "Dues (exact dues amount via Venmo or Zelle)", confidence=1.0)
+
+    when = record_date(record)
+    if not schedule.matches(amount, when, is_venmo=is_venmo(details, account)):
         return None
-    return _assign(1, "Dues (exact dues amount via Venmo or Zelle)", confidence=1.0)
+
+    window = schedule.window_for(when)
+    where = f" for {window.semester}" if window is not None else ""
+    return _assign(1, f"Dues (dues rate{where} via Venmo or Zelle)", confidence=1.0)
 
 
 def rule_meeting_food(record: dict) -> Classification | None:
@@ -327,7 +499,7 @@ HEURISTIC_RULES: tuple[Callable[[dict], Classification | None], ...] = (
 RULES: tuple[Callable[[dict], Classification | None], ...] = EXACT_RULES + HEURISTIC_RULES
 
 
-def _first_match(
+def first_match(
     record: dict, rules: tuple[Callable[[dict], Classification | None], ...]
 ) -> Classification:
     for rule in rules:
@@ -337,16 +509,31 @@ def _first_match(
     return UNMATCHED
 
 
-def classify_exact(record: dict) -> Classification:
+def exact_rules(
+    dues: DuesSchedule | None = None,
+) -> tuple[Callable[[dict], Classification | None], ...]:
+    """
+    The exact-rule chain, with `rule_dues` bound to a schedule if one is given.
+
+    Binding here rather than giving every rule a context parameter keeps the
+    other three rules plain single-argument callables, and keeps the no-schedule
+    path returning the exact same tuple object it always did.
+    """
+    if dues is None:
+        return EXACT_RULES
+    return (rule_refund, rule_formal, rule_consulting, partial(rule_dues, schedule=dues))
+
+
+def classify_exact(record: dict, *, dues: DuesSchedule | None = None) -> Classification:
     """Only the unambiguous rules. Returns UNMATCHED if none fire."""
-    return _first_match(record, EXACT_RULES)
+    return first_match(record, exact_rules(dues))
 
 
 def classify_heuristic(record: dict) -> Classification:
     """Only the keyword/weekday rules. Returns UNMATCHED if none fire."""
-    return _first_match(record, HEURISTIC_RULES)
+    return first_match(record, HEURISTIC_RULES)
 
 
 def classify_deterministic(record: dict) -> Classification:
     """Apply every rule in priority order. Returns UNMATCHED if none fire."""
-    return _first_match(record, RULES)
+    return first_match(record, RULES)

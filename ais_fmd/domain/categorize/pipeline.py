@@ -34,7 +34,9 @@ from .merchants import MerchantMemory
 from .predicates import (
     UNMATCHED,
     Classification,
-    classify_exact,
+    DuesSchedule,
+    exact_rules,
+    first_match,
 )
 from .scoring import AUTO_APPLY_THRESHOLD, CardRegistry, ScoredResult, score
 
@@ -100,6 +102,7 @@ def categorize_records(
     merchants: MerchantMemory | None = None,
     *,
     cards: CardRegistry | None = None,
+    dues: DuesSchedule | None = None,
     threshold: float = AUTO_APPLY_THRESHOLD,
 ) -> CategorizationRun:
     """
@@ -111,9 +114,15 @@ def categorize_records(
     committee, confidence and evidence intact -- and the row goes to the review
     queue rather than being booked on a coin-flip. `run.proposals` carries those
     so the queue can show its reasoning instead of an empty cell.
+
+    `dues` supplies per-term dues rates. Omitted, `rule_dues` falls back to the
+    Fall 2024 constant it always used -- see `predicates.DuesSchedule`.
     """
     memory = merchants or MerchantMemory()
     registry = cards or CardRegistry()
+    # Bound once, not per row: `exact_rules` builds a partial when a schedule is
+    # supplied, and this loop runs 892 times on the real table.
+    rules = exact_rules(dues)
     results: list[Classification] = [UNMATCHED] * len(records)
     proposals: dict[int, ScoredResult] = {}
     residual: list[tuple[int, dict]] = []
@@ -121,7 +130,7 @@ def categorize_records(
     for index, record in enumerate(records):
         # Certainties first: an exact dues amount, a transfer's sign, card 8408.
         # These are unambiguous by construction and must not be outvoted.
-        exact = classify_exact(record)
+        exact = first_match(record, rules)
         if exact.is_assigned:
             results[index] = exact
             continue
@@ -156,6 +165,8 @@ def categorize_records(
 def categorize_frame(
     df: pd.DataFrame,
     merchants: MerchantMemory | None = None,
+    *,
+    dues: DuesSchedule | None = None,
 ) -> tuple[pd.DataFrame, CategorizationRun]:
     """
     Categorize a parsed statement frame.
@@ -175,7 +186,7 @@ def categorize_frame(
         return out, CategorizationRun()
 
     records = out.to_dict("records")
-    run = categorize_records(records, merchants)
+    run = categorize_records(records, merchants, dues=dues)
 
     out["budget_category"] = [item.committee_id for item in run.classifications]
     out["purpose"] = [item.purpose for item in run.classifications]
