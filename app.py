@@ -32,7 +32,19 @@ if settings.is_sandbox():
                 seed(backend, reset=False)
         st.session_state.sandbox_ready = True
 
+# --- Authentication ----------------------------------------------------------
+# Sandbox is open and switches roles from the sidebar. Production requires the
+# operator password before any page renders.
+
+auth.login_gate()
+
 # --- Navigation --------------------------------------------------------------
+#
+# MVP SCOPE. `Reimbursements` is commented out rather than deleted: the page,
+# its domain module, its tests and its SQLite tables all still exist and still
+# pass, and the Postgres side is written and waiting in
+# migrations/002_deferred_features.sql. Turning it back on means uncommenting
+# one line and running that migration. Nothing else imports it -- verified.
 
 PAGES = [
     ("ais_fmd/views/Home.py", "Home", ":material/home:", auth.Role.MEMBER),
@@ -41,7 +53,7 @@ PAGES = [
     ("ais_fmd/views/ReviewQueue.py", "Review Queue", ":material/rule:", auth.Role.TREASURER),
     ("ais_fmd/views/Officer.py", "My Committee", ":material/badge:", auth.Role.OFFICER),
     ("ais_fmd/views/Dues.py", "Dues", ":material/groups:", auth.Role.MEMBER),
-    ("ais_fmd/views/Reimbursements.py", "Reimbursements", ":material/receipt_long:", auth.Role.MEMBER),
+    # ("ais_fmd/views/Reimbursements.py", "Reimbursements", ":material/receipt_long:", auth.Role.MEMBER),  # MVP: deferred
     ("ais_fmd/views/Reports.py", "Alerts & Reports", ":material/notifications:", auth.Role.MEMBER),
     ("ais_fmd/views/Reconciliation.py", "Reconciliation", ":material/balance:", auth.Role.MEMBER),
     ("ais_fmd/views/Planner.py", "Scenario Planner", ":material/insights:", auth.Role.TREASURER),
