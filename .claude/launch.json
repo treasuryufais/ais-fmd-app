@@ -1,0 +1,28 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Streamlit App",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": ["run", "app.py"],
+      "port": 8501
+    },
+    {
+      "name": "ais-fmd-sandbox",
+      "runtimeExecutable": "C:\\Users\\durpy_7vdh2wz\\ais-fmd-sandbox\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": [
+        "-m",
+        "streamlit",
+        "run",
+        "C:\\Users\\durpy_7vdh2wz\\ais-fmd-sandbox\\app.py",
+        "--server.port",
+        "8511",
+        "--server.headless",
+        "true",
+        "--browser.gatherUsageStats",
+        "false"
+      ],
+      "port": 8511
+    }
+  ]
+}

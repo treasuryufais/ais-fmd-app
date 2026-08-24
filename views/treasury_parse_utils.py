@@ -57,4 +57,6 @@ def merge_legacy_and_enhanced_auto_cat(df_proc: pd.DataFrame) -> pd.DataFrame:
     mask = enhanced["budget"].astype(str).str.strip() != ""
     df.loc[mask, "purpose"] = enhanced.loc[mask, "purpose"].values
     df.loc[mask, "budget"] = enhanced.loc[mask, "budget"].values
+    # Which calendar event drove a fallback assignment, blank for every other row.
+    df["event_hint"] = enhanced["event_hint"].values
     return df
