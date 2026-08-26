@@ -157,8 +157,22 @@ def metric(
     FINDING F11: `inverse=True` on expenses, so spending more than last semester
     reads as negative rather than being coloured as an improvement.
     """
-    display_value = format_currency(value) if currency else f"{value:,}"
-    display_delta = format_delta(delta) if currency else (f"{delta:+,}" if delta else None)
+    # A string is already formatted -- a percentage, a ratio, a count with a
+    # unit. Passing one through `f"{value:,}"` raises, so a caller with anything
+    # that is not a bare number had no way to use this at all.
+    if currency:
+        display_value = format_currency(value)
+    elif isinstance(value, str):
+        display_value = value
+    else:
+        display_value = f"{value:,}"
+
+    if currency:
+        display_delta = format_delta(delta)
+    elif isinstance(delta, str):
+        display_delta = delta
+    else:
+        display_delta = f"{delta:+,}" if delta else None
     container.metric(
         label=label,
         value=display_value,
@@ -192,6 +206,89 @@ def metric_row(specs: Iterable[dict]) -> None:
             currency=spec.get("currency", True),
             trend=spec.get("trend"),
         )
+
+
+def linked_slider(
+    label: str,
+    *,
+    min_value,
+    max_value,
+    value,
+    step,
+    key: str,
+    help: str | None = None,
+    format: str | None = None,
+):
+    """
+    A slider paired with a number input for exact entry, kept in sync.
+
+    Dragging a slider is fast but imprecise; typing a number is precise but
+    slow for exploring a range. Pairing them costs one extra widget and gives
+    both -- and it bounds the value to `[min_value, max_value]` either way,
+    which a bare `st.number_input` with no `max_value` does not: that gap is
+    what let "expected members" on the Dues and Planner pages be typed or
+    computed into values with no relationship to a real roster size.
+
+    `key` must be unique per call on a page, same as any Streamlit widget key.
+    Int-typed `min_value`/`max_value`/`value`/`step` produce an int slider;
+    float-typed ones produce a float slider -- same type inference Streamlit's
+    own `st.slider` uses, since this delegates to it.
+
+    Syncing works by writing the *other* widget's session-state key directly
+    from each one's `on_change` callback -- passing `value=` again on a later
+    rerun would not do it, since Streamlit ignores `value` for a widget whose
+    key already holds state and uses only what's in `st.session_state` for
+    that key. Writing both keys in the callback is what makes the second
+    widget actually move.
+
+    `value=` is passed to each widget **only on the render where its key does
+    not exist yet** (the very first one). Passing it on every render, even
+    with the correct value, trips Streamlit's own policy check -- it logs
+    "created with a default value but also had its value set via the Session
+    State API" and warns that a future version may turn this into a hard
+    error. The check exists for exactly this shape of bug, so the fix is to
+    stop doing the thing it's warning about, not to ignore the warning.
+    """
+    state_key = f"_linked_{key}"
+    slider_key = f"{key}_slider"
+    number_key = f"{key}_number"
+
+    if state_key not in st.session_state:
+        st.session_state[state_key] = value
+
+    def _sync(source_key: str) -> None:
+        new_value = st.session_state[source_key]
+        st.session_state[state_key] = new_value
+        st.session_state[slider_key] = new_value
+        st.session_state[number_key] = new_value
+
+    slider_col, number_col = st.columns([4, 1])
+    with slider_col:
+        st.slider(
+            label,
+            min_value=min_value,
+            max_value=max_value,
+            step=step,
+            format=format,
+            help=help,
+            key=slider_key,
+            on_change=_sync,
+            args=(slider_key,),
+            **({"value": st.session_state[state_key]} if slider_key not in st.session_state else {}),
+        )
+    with number_col:
+        st.number_input(
+            label,
+            min_value=min_value,
+            max_value=max_value,
+            step=step,
+            key=number_key,
+            label_visibility="collapsed",
+            on_change=_sync,
+            args=(number_key,),
+            **({"value": st.session_state[state_key]} if number_key not in st.session_state else {}),
+        )
+    return st.session_state[state_key]
 
 
 def chart(figure: go.Figure, *, key: str | None = None) -> None:

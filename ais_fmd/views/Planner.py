@@ -73,20 +73,29 @@ left, right = st.columns([1, 1])
 
 with left:
     st.markdown("#### Membership and dues")
-    dues_rate = st.slider(
+    dues_rate = shell.linked_slider(
         "Dues rate",
         min_value=0.0,
         max_value=150.0,
         value=float(suggestion["dues_rate"]),
         step=2.50,
         format="$%.2f",
+        key="planner_dues_rate",
     )
-    expected_members = st.slider(
+    # Fixed 0-300, not `max(400, suggestion["expected_members"] * 2)`: a range
+    # that scales with a *projected* number made the slider's proportions
+    # swing with whatever the projection happened to suggest, which read as
+    # broken rather than adaptive. 300 comfortably covers the real roster
+    # (149 members on the Fall 2026 form, HANDOFF.md §12.1) with room to model
+    # real growth; the number input next to it still accepts anything in range
+    # exactly, so nothing is lost for an unusual term.
+    expected_members = shell.linked_slider(
         "Expected paying members",
         min_value=0,
-        max_value=max(400, suggestion["expected_members"] * 2),
-        value=int(suggestion["expected_members"]),
+        max_value=300,
+        value=min(int(suggestion["expected_members"]), 300),
         step=5,
+        key="planner_expected_members",
     )
     other_income_change = st.number_input(
         "Change in other income (sponsorship, events)",

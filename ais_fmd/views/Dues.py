@@ -64,17 +64,25 @@ if summary.first_payment is not None:
 st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 st.markdown("#### Collection against roster")
 
-roster_column, gap_column = st.columns([1, 3])
-with roster_column:
-    expected = st.number_input(
-        "Expected members",
-        min_value=0,
-        value=max(summary.unique_payers, 0),
-        step=5,
-        help="How many members you expect to pay this term. The gap is calculated from this.",
-    )
+# Bounded 0-300, not a bare `st.number_input` with no ceiling: that let this
+# be typed or left at a stale value with no relationship to a real roster
+# size ("way out of proportion"). 300 comfortably covers the real roster (149
+# members on the Fall 2026 form, HANDOFF.md §12.1). The Roster page
+# (ais_fmd/views/Roster.py) is the actual source of truth for who's expected
+# to pay, matched by name against real payments -- this stays a rough manual
+# estimate for terms with no roster uploaded yet.
+expected = shell.linked_slider(
+    "Expected members",
+    min_value=0,
+    max_value=300,
+    value=min(max(summary.unique_payers, 0), 300),
+    step=5,
+    key="dues_expected_members",
+    help="How many members you expect to pay this term. The gap is calculated from this.",
+)
 
 gap = dues_domain.outstanding(summary.unique_payers, int(expected))
+gap_column = st.container()
 with gap_column:
     if gap["expected"] == 0:
         st.caption("Enter an expected roster size to see the outstanding count.")
