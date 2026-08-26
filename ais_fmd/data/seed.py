@@ -28,6 +28,7 @@ from ..config.categories import (
 )
 from ..domain.categorize.predicates import COMMITTEE_PURPOSE
 from ..domain.dedupe import assign_natural_keys
+from ..domain.dues import CONFIRMED_DUES_RATES, format_rates
 from .sqlite_backend import SqliteBackend
 
 SEED = 20260810
@@ -37,6 +38,7 @@ TERMS = [
     ("SP25", "Spring 2025", date(2025, 1, 6), date(2025, 5, 2)),
     ("FA25", "Fall 2025", date(2025, 8, 20), date(2025, 12, 12)),
     ("SP26", "Spring 2026", date(2026, 1, 5), date(2026, 5, 1)),
+    ("FA26", "Fall 2026", date(2026, 8, 15), date(2026, 12, 18)),
 ]
 
 # Seeded from the constant `rule_dues` used before rates became per-term data,
@@ -347,13 +349,26 @@ def seed(backend: SqliteBackend | None = None, *, reset: bool = True) -> dict:
             "VALUES (?, ?, ?)",
             [(c.id, c.name, "committee" if c.kind == "committee" else "ledger") for c in COMMITTEES],
         )
+        # Terms treasury has confirmed carry their real rates and a verified
+        # flag; the rest keep the seeded assumption and stay flagged, so a fresh
+        # sandbox reproduces the same mix of confirmed and outstanding that the
+        # real database has.
         connection.executemany(
             "INSERT OR REPLACE INTO terms "
             "(TermID, Semester, start_date, end_date, dues_rates, dues_rates_verified) "
-            "VALUES (?, ?, ?, ?, ?, 0)",
+            "VALUES (?, ?, ?, ?, ?, ?)",
             [
-                (t[0], t[1], t[2].isoformat(), t[3].isoformat(), SEED_DUES_RATES)
-                for t in TERMS
+                (
+                    term_id,
+                    semester,
+                    start.isoformat(),
+                    end.isoformat(),
+                    format_rates(CONFIRMED_DUES_RATES[semester])
+                    if semester in CONFIRMED_DUES_RATES
+                    else SEED_DUES_RATES,
+                    1 if semester in CONFIRMED_DUES_RATES else 0,
+                )
+                for term_id, semester, start, end in TERMS
             ],
         )
         connection.commit()

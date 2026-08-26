@@ -23,7 +23,13 @@ from ..config.categories import (
     committee_name,
     legacy_account_values,
 )
-from .categorize.predicates import is_venmo_or_zelle
+from .categorize.predicates import is_venmo_or_zelle, mentions_dues
+from .categorize.scoring import (
+    CONFIRMED_CARDS,
+    ROSTER_ERA,
+    ROSTER_ERA_ENDS,
+    card_number,
+)
 from .dedupe import identity_tuple
 from .dues import schedule_from_terms
 from .money import parse_amount
@@ -69,6 +75,7 @@ def run_all_checks(
         check_disputed_mappings,
         check_unverified_dues_rates,
         check_possible_dues_rate_change,
+        check_card_roster_era,
     ):
         try:
             issue = check(df_transactions, df_budgets, df_terms)
@@ -299,6 +306,104 @@ def check_disputed_mappings(df_transactions, df_budgets, df_terms) -> Issue | No
     )
 
 
+def check_card_roster_era(df_transactions, df_budgets, df_terms) -> Issue | None:
+    """
+    Card assignments confirmed under an officer cohort that has since turned over.
+
+    Treasury: "The cards might change around with new VPs, I will input their
+    numbers later." A card number is only evidence about a committee for as long
+    as the same person holds it, and nothing about a reissued card looks
+    different in a bank statement -- it keeps voting, just for the wrong
+    committee.
+
+    Card 8408 is the one that matters. `rule_consulting` treats it as a
+    certainty that ignores every other rule, including a mapping a human
+    confirmed, so if that card changed hands its spend is being booked to
+    Consulting with no way for any other evidence to correct it.
+
+    Fires on transactions dated after the roster's cohort ended, because that is
+    when a stale roster starts doing damage rather than when the calendar says
+    a year rolled over.
+    """
+    if df_transactions is None or df_transactions.empty:
+        return _no_issue()
+    if "transaction_date" not in df_transactions.columns:
+        return _no_issue()
+
+    dates = pd.to_datetime(df_transactions["transaction_date"], errors="coerce")
+    after = df_transactions[dates > pd.Timestamp(ROSTER_ERA_ENDS)]
+    if after.empty:
+        return _no_issue()
+
+    cards = after["details"].map(lambda d: card_number(d) if d is not None else None)
+    carded = after[cards.notna()]
+    if carded.empty:
+        return _no_issue()
+
+    known = set(CONFIRMED_CARDS)
+    seen = set(cards.dropna())
+    on_known = carded[cards.dropna().isin(known).reindex(carded.index, fill_value=False)]
+    on_unknown = carded[~cards.dropna().isin(known).reindex(carded.index, fill_value=False)]
+
+    roster = ", ".join(
+        f"{card} -> {committee_name(a.committee_id)} ({a.holder})"
+        for card, a in sorted(CONFIRMED_CARDS.items())
+    )
+    header = (
+        f"The card roster was confirmed for the {ROSTER_ERA} officer cohort, "
+        f"which ended {ROSTER_ERA_ENDS:%Y-%m-%d}.\n\nCurrent roster: {roster}\n"
+    )
+
+    # Two different failures, and which one you have changes what to do about
+    # it. Real Fall 2026 data showed the second: not one card in the statement
+    # appears in the roster, so the card signal contributes nothing at all --
+    # a quieter problem than a wrong assignment, and easier to miss precisely
+    # because nothing looks wrong.
+    if not on_known.empty:
+        return Issue(
+            code="card_roster_era",
+            severity="medium",
+            title="Card roster may predate the current officers",
+            detail=(
+                header
+                + f"\n{len(on_known)} transaction(s) after that date are still being "
+                "attributed through it. If a card was reissued to a new VP it now "
+                "points at the wrong committee, and nothing in the data looks any "
+                "different.\n\n"
+                "Card 8408 is the urgent one: it is an exact rule that outranks "
+                "every other signal including a confirmed merchant mapping, so a "
+                "wrong assignment there cannot be corrected by anything except "
+                "changing the roster.\n\n"
+                "Confirm the numbers with treasury, then update CONFIRMED_CARDS in "
+                "`domain/categorize/scoring.py` and bump ROSTER_ERA."
+            ),
+            count=len(on_known),
+            rows=on_known.head(200),
+        )
+
+    return Issue(
+        code="card_roster_era",
+        severity="medium",
+        title="No card in current spending is on the roster",
+        detail=(
+            header
+            + f"\nEvery one of the {len(on_unknown)} card transaction(s) since then "
+            f"is on a card nobody has identified: {', '.join(sorted(seen))}. None of "
+            "the roster's cards appear at all, which is what a completed handover "
+            "looks like from inside the data.\n\n"
+            "Nothing is being mis-booked — an unknown card simply contributes no "
+            "evidence — but the card signal, normally one of the strongest inputs "
+            "to categorisation, is doing nothing. Every purchase on these cards "
+            "loses its best clue about which committee it belongs to and lands in "
+            "the review queue by default.\n\n"
+            "Ask treasury who holds them, then update CONFIRMED_CARDS in "
+            "`domain/categorize/scoring.py` and bump ROSTER_ERA."
+        ),
+        count=len(on_unknown),
+        rows=on_unknown.head(200),
+    )
+
+
 def check_unverified_dues_rates(df_transactions, df_budgets, df_terms) -> Issue | None:
     """
     Terms whose dues rates nobody has confirmed.
@@ -385,19 +490,72 @@ def check_possible_dues_rate_change(df_transactions, df_budgets, df_terms) -> Is
         return _no_issue()
 
     ranked = sorted(clusters.items(), key=lambda item: -len(item[1]))
-    lines = [
-        f"{len(positions)} payments of {amount:.2f}" for amount, positions in ranked[:8]
-    ]
+
+    # A payer who wrote "dues" on the memo has named the payment themselves. At
+    # an amount no term on file charged, that is the strongest evidence of a
+    # rate change available anywhere in the data -- much stronger than a bare
+    # cluster, which could be any repeated non-dues payment. `rule_dues_memo`
+    # books these, so they are no longer sitting in the review queue waiting to
+    # be noticed; this is what makes sure they still get noticed.
+    memoed: dict[Decimal, int] = {}
+    for amount, positions in clusters.items():
+        named = sum(
+            1 for p in positions if mentions_dues(df_transactions.iloc[p].get("details"))
+        )
+        if named:
+            memoed[amount] = named
+
+    lines = []
+    for amount, positions in ranked[:8]:
+        named = memoed.get(amount, 0)
+        suffix = f"  ({named} of them say 'dues' on the memo)" if named else ""
+        lines.append(f"{len(positions)} payments of {amount:.2f}{suffix}")
+
     affected = sorted({p for positions in clusters.values() for p in positions})
+
+    # Treasury: "Execs pay the discounted rate, some people pay less for other
+    # reasons ... if it says dues ... mark it under dues." Off-rate dues are
+    # therefore routine, not an anomaly, and a HIGH alarm on every discount
+    # would train a treasurer to ignore this check entirely -- taking the real
+    # signal down with it.
+    #
+    # The two cases separate cleanly on the memo. A cluster where everyone wrote
+    # "dues" is already booked as dues income and is most likely a standing
+    # discount. A cluster where nobody did is money arriving at an amount the
+    # app cannot explain, which is what an unrecorded rate change looks like.
+    all_explained = all(
+        memoed.get(amount, 0) == len(positions) for amount, positions in clusters.items()
+    )
+
+    if all_explained:
+        return Issue(
+            code="possible_dues_rate_change",
+            severity="low",
+            title="Dues paid at amounts not recorded on the term",
+            detail=(
+                "These payments name themselves as dues but sit at an amount no "
+                "term on file charged. They are already counted as dues income, "
+                "so nothing is missing from the books.\n\n" + "\n".join(lines) +
+                "\n\nWorth a look only because a rate known solely from what "
+                "members typed in a memo is a rate nobody has confirmed. If one "
+                "of these is a standing rate -- an exec or discounted rate, say "
+                "-- add it to the term's rates on Treasury and it will match "
+                "directly. The term accepts any number of rates."
+            ),
+            count=len(affected),
+            rows=df_transactions.iloc[affected].head(200),
+        )
+
     return Issue(
         code="possible_dues_rate_change",
         severity="high",
         title="Repeated incoming transfers at an amount dues does not recognise",
         detail=(
-            "Multiple people sent the same amount by Venmo or Zelle and the dues "
-            "schedule rejected all of them. The usual cause is a rate change the "
-            "app was never told about. Confirm the term's rates and set them on "
-            "the term, or dismiss these as non-dues income.\n\n" + "\n".join(lines)
+            "Multiple people sent the same amount by Venmo or Zelle, the dues "
+            "schedule rejected all of them, and their memos do not say dues. "
+            "That combination is what an unrecorded rate change looks like from "
+            "inside the data. Confirm the term's rates and set them on the term, "
+            "or dismiss these as non-dues income.\n\n" + "\n".join(lines)
         ),
         count=len(affected),
         rows=df_transactions.iloc[affected].head(200),

@@ -131,7 +131,23 @@ def _operator_email() -> str:
 
 def login_gate() -> None:
     """
-    Require the operator password before anything renders, in production only.
+    Require a real identity before anything renders, in production only.
+
+    Two independent paths land in the same `Identity` shape, so nothing past
+    this function knows or cares which one ran:
+
+      1. **Google sign-in**, for VPs. `st.login()` is Streamlit's own OIDC
+         flow (Authlib) -- Supabase Auth is not involved, because the app
+         talks to Supabase with its own service/anon key regardless of who is
+         using it. A signed-in Google identity is looked up by email in
+         `profiles`; a hit becomes that person's real role and committee, a
+         miss is refused rather than silently downgraded to MEMBER, because a
+         wrong email in `profiles` should look like an error, not like reduced
+         access.
+      2. **The shared treasury password**, unchanged from before. Kept as the
+         fallback that cannot be broken by a typo in `profiles` or by Google
+         being unconfigured -- the treasurer is never locked out by this
+         feature landing.
 
     Halts the script when not signed in, so a page cannot render for an
     unauthenticated visitor even if it forgets to call `require`.
@@ -140,6 +156,35 @@ def login_gate() -> None:
         return
     if SESSION_KEY in st.session_state:
         return
+
+    st.title("UF AIS Financial Management")
+
+    denied_google_email: str | None = None
+    if _google_auth_configured():
+        if getattr(st.user, "is_logged_in", False):
+            identity = _identity_for_google_user(dict(st.user))
+            if identity is not None:
+                st.session_state[SESSION_KEY] = identity
+                st.rerun()
+            # Logged into Google, but no matching profiles row: refused, not
+            # silently downgraded. Falls through to the password form below
+            # rather than stopping here, so a treasurer whose own email is
+            # mistyped in `profiles` still has a way in.
+            denied_google_email = str(st.user.get("email") or "unknown address")
+        else:
+            st.caption("VP access")
+            if st.button("Sign in with Google", type="primary", key="google_login_button"):
+                st.login()
+            st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
+
+    if denied_google_email:
+        st.error(
+            f"**{denied_google_email}** is not set up for access. Ask the "
+            "treasurer to add it under Officer Access, or sign in below with "
+            "the treasury password."
+        )
+
+    st.caption("Treasury access")
 
     expected = _configured_password()
     if expected is None:
@@ -151,9 +196,6 @@ def login_gate() -> None:
             "```toml\n[treasury]\npassword = \"...\"\n```"
         )
         st.stop()
-
-    st.title("UF AIS Financial Management")
-    st.caption("Treasury access")
 
     attempts = st.session_state.get(_PASSWORD_ATTEMPT_KEY, 0)
     if attempts >= MAX_LOGIN_ATTEMPTS:
@@ -180,8 +222,87 @@ def login_gate() -> None:
     st.stop()
 
 
+# --- Google sign-in (VP portal) -----------------------------------------------
+#
+# Split deliberately into a thin Streamlit-facing half (`_google_auth_configured`,
+# the `st.user` reads inside `login_gate`) and a pure half (`_identity_for_google_user`,
+# `_role_from_string`) that takes a plain dict and a profile row and returns an
+# Identity. `st.user` is backed by Streamlit's real OIDC session machinery, which
+# `AppTest` has no hook to fake, so the pure half is what `tests/test_auth_gate.py`
+# can actually exercise; the glue half can only be verified against a real Google
+# sign-in once `[auth]` secrets exist. See HANDOFF.md for that outstanding step.
+
+_ROLE_BY_NAME: dict[str, Role] = {
+    "member": Role.MEMBER,
+    "officer": Role.OFFICER,
+    "treasurer": Role.TREASURER,
+    "admin": Role.ADMIN,
+}
+
+
+def _role_from_string(value: object) -> Role | None:
+    return _ROLE_BY_NAME.get(str(value or "").strip().lower())
+
+
+def google_login_available() -> bool:
+    """Public wrapper -- pages that mention Google sign-in check this, not the private flag."""
+    return _google_auth_configured()
+
+
+def _google_auth_configured() -> bool:
+    """
+    Whether `st.login()` has anything to do.
+
+    Checked before rendering the button or touching `st.user`, so a deployment
+    that has not set up Google yet behaves exactly as it did before this
+    feature existed -- password only, no button, no change in flow.
+    """
+    try:
+        section = st.secrets.get("auth", {})
+    except Exception:  # noqa: BLE001 - no secrets file at all is a valid state
+        return False
+    return bool(section.get("client_id")) and bool(section.get("server_metadata_url"))
+
+
+def _default_profile_lookup(email: str) -> dict | None:
+    from .data import repositories as repo
+
+    return repo.backend().fetch_profile(email)
+
+
+def _identity_for_google_user(
+    user_info: dict, *, fetch_profile=_default_profile_lookup
+) -> Identity | None:
+    """
+    A signed-in Google identity, resolved against `profiles`, or None on a miss.
+
+    Pure given `user_info` (an OIDC claims dict -- at minimum `email`) and a
+    lookup function. `fetch_profile` is injected rather than imported at call
+    time specifically so this -- the part that actually decides who gets in as
+    what -- is unit-testable with a fake roster and no real database, let alone
+    a real OIDC session. `login_gate` calls this with the real default.
+    """
+    email = str(user_info.get("email") or "").strip()
+    if not email:
+        return None
+    profile = fetch_profile(email)
+    if profile is None:
+        return None
+    role = _role_from_string(profile.get("role"))
+    if role is None:
+        return None
+    committee_id = profile.get("committee_id")
+    return Identity(
+        email=email,
+        role=role,
+        committee_id=int(committee_id) if committee_id is not None else None,
+    )
+
+
 def sign_out() -> None:
     st.session_state.pop(SESSION_KEY, None)
+    if _google_auth_configured() and getattr(st.user, "is_logged_in", False):
+        st.logout()
 
 
 def set_identity(identity: Identity) -> None:

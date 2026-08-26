@@ -215,7 +215,15 @@ def test_merchant_memory_still_outranks_heuristic_rules():
     assert run.classifications[0].source == "merchant"
 
 
-def test_dues_and_refunds_are_unaffected_by_merchant_rules():
+def test_dues_are_unaffected_by_merchant_rules():
+    """
+    An exact rule still outranks a merchant mapping.
+
+    The outgoing leg no longer asserts a committee: since treasury ruled that a
+    reimbursement belongs to the committee it repaid, an outgoing transfer whose
+    memo names nothing is deliberately left unresolved. What still matters here
+    is that a blanket "zelle -> Merch" mapping cannot claim either row.
+    """
     memory = MerchantMemory(
         [MerchantRule(key="zelle", canonical_name="Zelle", committee_id=13, purpose="Merch")]
     )
@@ -224,8 +232,9 @@ def test_dues_and_refunds_are_unaffected_by_merchant_rules():
         record("ZELLE TO JOHN SMITH ON 07/09 REF # A2", -50.00),
     ]
     run = categorize_records(rows, memory)
-    assert run.classifications[0].committee_id == 1   # dues
-    assert run.classifications[1].committee_id == 17  # refund
+    assert run.classifications[0].committee_id == 1  # dues, by exact amount
+    assert run.classifications[1].committee_id != 13, "merchant memory must not claim it"
+    assert run.classifications[1].source != "merchant"
 
 
 # --- The apply path ----------------------------------------------------------

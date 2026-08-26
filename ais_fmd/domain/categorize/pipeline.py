@@ -135,6 +135,16 @@ def categorize_records(
             results[index] = exact
             continue
 
+        # An unassigned result that still carries a rule string is a *hint*: the
+        # rules recognised what kind of row this is without being able to name a
+        # committee. `rule_reimbursement` is the case that matters -- an outgoing
+        # transfer is now a question rather than an automatic booking to
+        # Refunded, and the review queue reads `match_rule` to phrase it. Keep it
+        # as the fallback and carry on: merchant memory or scoring may still find
+        # a real answer, and either overwrites this.
+        if exact.rule:
+            results[index] = exact
+
         # A merchant mapping is a human's explicit decision about this exact
         # merchant, so it short-circuits rather than competing as a signal. As a
         # signal it lost: a confirmed mapping and a full meeting-food reading

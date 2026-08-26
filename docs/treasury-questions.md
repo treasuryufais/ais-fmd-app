@@ -1,6 +1,41 @@
 # Questions for treasury
 
-**Status: draft — not sent.** Written to be pasted into an email or Slack message.
+**Status: answered 2026-08-24.** Four of five resolved; 5a still open.
+
+The questions are kept below as they were asked, because each answer only means
+something next to the question it answers. What was decided:
+
+| # | Question | Answer | Where it landed |
+| --- | --- | --- | --- |
+| 1 | Dues rates per term | Last term \$35 / \$52.50. **This term (Fall 2026) \$50 / \$65.** Formal payments will land near those amounts; real dues are an exact figure | `dues.CONFIRMED_DUES_RATES`, applied by `scripts/apply_treasury_rates.py` |
+| 2 | Who holds the seven cards | Cards move with new VPs; numbers to follow | `quality.check_card_roster_era` — no roster guessed, see below |
+| 3 | Which committee a reimbursement hits | **The committee it repaid.** "If someone spends money on a personal card and gets reimbursed then it was a committee expenditure" | `predicates.rule_reimbursement` replaces `rule_refund` |
+| 4 | Venmo dues arriving net of fees | Venmo is **deprecated** going forward; count historical rows net of fees | `dues.ACCEPT_VENMO_NET_OF_FEES = True` |
+| 5a | Disputed purpose mappings | **Still open** — "I'm not sure, keep it as an open question" | unchanged; `DISPUTED_PURPOSE_MAPPINGS` still reports it |
+| 5b | Are memos enough to book a transfer | **Yes.** "Absolutely look at the memos they will clarify it well" — and a dues keyword **in addition** to the amount rule | `predicates.MEMO_COMMITTEE_KEYWORDS`, plus `rule_dues_memo` |
+
+Each of these is asserted in `tests/test_treasury_decisions.py`, one test per
+ruling, so reversing a decision fails the test that names it.
+
+### Two things the answers did not settle
+
+**The seven cards were not guessed.** Treasury said to use a best guess, and
+there is no honest one available. The only current-era evidence about those
+cards is the app's own `budget_category`, which the categorizer wrote itself —
+inferring a roster from it would train the categorizer on its own output. The
+2022-23 human labels are a different cohort with different card numbers. So the
+roster is unchanged and a new check reports the real risk instead: the four
+*documented* cards were confirmed for the 2024-2026 cohort, and Fall 2026 began
+a new one. Card 8408 matters most, because `rule_consulting` treats it as a
+certainty that outranks even a human's merchant mapping.
+
+**"Last term" was read as Spring 2026.** This changes no numbers — \$35/\$52.50
+was already the assumed default for every term — so the only consequence of
+being wrong is which row shows as confirmed on the Data Quality page. Earlier
+terms are deliberately still unconfirmed; Spring 2025 in particular had both
+rate pairs circulating and nobody has said which counted.
+
+---
 
 Five questions. Each one is currently blocking something specific, and each is
 answerable from records or memory without touching the app. They are ordered by

@@ -1,5 +1,14 @@
-streamlit>=1.40
-pandas>=2.2
+# >=1.49: the views pass width="stretch" to st.dataframe/st.plotly_chart. On
+# 1.44 that raises TypeError at render time, so every view test fails while the
+# domain suite stays green -- which looks like a broken app rather than a
+# too-old dependency. The floor is the API, not a preference.
+streamlit>=1.49
+# >=2.3: pandas 2.2 against numpy >=2.5 makes `pd.Timedelta(days=n)` itself emit
+# a DeprecationWarning that says it will become an error -- nothing to do with
+# our code, and it fires on the Review Queue's period filter. Verified on 3.0.5.
+pandas>=2.3
 plotly>=5.20
-openpyxl>=3.1
+# >=3.1.5: pandas 3 refuses to read .xlsx with anything older, so every Excel
+# upload -- statements and membership rosters both -- fails at import time.
+openpyxl>=3.1.5
 pytest>=8.0

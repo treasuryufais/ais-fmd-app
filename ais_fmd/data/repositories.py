@@ -94,6 +94,16 @@ def _statement_balances(version: int) -> pd.DataFrame:
     return backend().fetch_statement_balances()
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _members(version: int, term_id: str | None) -> pd.DataFrame:
+    return backend().fetch_members(term_id)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _profiles(version: int) -> pd.DataFrame:
+    return backend().fetch_profiles()
+
+
 # --- Public API --------------------------------------------------------------
 
 def load_committees() -> pd.DataFrame:
@@ -118,6 +128,14 @@ def load_uploaded_files() -> pd.DataFrame:
 
 def load_merchants() -> pd.DataFrame:
     return _merchants(data_version())
+
+
+def load_members(term_id: str | None = None) -> pd.DataFrame:
+    return _members(data_version(), term_id)
+
+
+def load_profiles() -> pd.DataFrame:
+    return _profiles(data_version())
 
 
 def load_audit(limit: int = 500) -> pd.DataFrame:

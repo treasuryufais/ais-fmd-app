@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import pytest
 import streamlit as st
+from streamlit import config as st_config
 from streamlit.testing.v1 import AppTest
 
 from ais_fmd import auth, settings
@@ -22,9 +23,47 @@ from ais_fmd import auth, settings
 PASSWORD = "correct-horse-battery-staple"
 
 
-def gate_script(secrets: dict | None) -> str:
+@pytest.fixture(autouse=True)
+def isolated_secrets(tmp_path):
+    """
+    Point Streamlit's secrets loader at a file this test owns.
+
+    `st.secrets` is process-global and reads the developer's real
+    `.streamlit/secrets.toml` regardless of what `AppTest.secrets` is set to --
+    `AppTest.secrets` merges on top of the file rather than replacing it. On any
+    machine that actually has a secrets file, which is every machine set up to
+    run the production path, the real treasury password leaks in and
+    `test_no_password_configured_denies_everyone` becomes unrunnable: the gate
+    finds a password and renders a login form instead of the configuration
+    error, so the assertion fails for a reason that has nothing to do with the
+    gate. Same family of trap as the process-global caches in `test_views.py`.
+
+    `_reset()` is private, but the alternative is leaving the single
+    fails-closed property of the login gate untestable.
+    """
+    original = st_config.get_option("secrets.files")
+    path = tmp_path / "secrets.toml"
+    st_config.set_option("secrets.files", [str(path)])
+    st.secrets._reset()
+    yield path
+    st_config.set_option("secrets.files", original)
+    st.secrets._reset()
+
+
+def _as_toml(secrets: dict) -> str:
+    """Serialize the one shape these tests use: {section: {key: str}}."""
+    lines: list[str] = []
+    for section, values in secrets.items():
+        lines.append(f"[{section}]")
+        for key, value in values.items():
+            escaped = str(value).replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(f'{key} = "{escaped}"')
+    return "\n".join(lines) + "\n"
+
+
+def gate_script() -> str:
     """A minimal app that is nothing but the gate, plus a marker after it."""
-    return f"""
+    return """
 import streamlit as st
 from ais_fmd import auth
 
@@ -34,37 +73,38 @@ st.write(auth.current_user().email)
 """
 
 
-def run_gate(monkeypatch, *, production: bool, secrets: dict) -> AppTest:
+def run_gate(monkeypatch, isolated_secrets, *, production: bool, secrets: dict) -> AppTest:
     monkeypatch.setenv(settings.ENV_VAR, "production" if production else "sandbox")
-    app = AppTest.from_string(gate_script(secrets))
-    app.secrets.update(secrets)
-    return app.run()
+    if secrets:
+        isolated_secrets.write_text(_as_toml(secrets), encoding="utf-8")
+    st.secrets._reset()
+    return AppTest.from_string(gate_script()).run()
 
 
 # --- Fails closed ------------------------------------------------------------
 
-def test_no_password_configured_denies_everyone(monkeypatch):
+def test_no_password_configured_denies_everyone(monkeypatch, isolated_secrets):
     """A missing secret must not read as 'no password required'."""
-    app = run_gate(monkeypatch, production=True, secrets={})
+    app = run_gate(monkeypatch, isolated_secrets, production=True, secrets={})
     assert not any("PAST_THE_GATE" in str(m.value) for m in app.markdown)
     assert app.error, "expected a configuration error to be shown"
     assert "Not configured" in app.error[0].value
 
 
-def test_blank_password_configured_denies_everyone(monkeypatch):
-    app = run_gate(monkeypatch, production=True, secrets={"treasury": {"password": "   "}})
+def test_blank_password_configured_denies_everyone(monkeypatch, isolated_secrets):
+    app = run_gate(monkeypatch, isolated_secrets, production=True, secrets={"treasury": {"password": "   "}})
     assert app.error
     assert "Not configured" in app.error[0].value
 
 
-def test_gate_blocks_before_any_page_renders(monkeypatch):
-    app = run_gate(monkeypatch, production=True, secrets={"treasury": {"password": PASSWORD}})
+def test_gate_blocks_before_any_page_renders(monkeypatch, isolated_secrets):
+    app = run_gate(monkeypatch, isolated_secrets, production=True, secrets={"treasury": {"password": PASSWORD}})
     rendered = " ".join(str(m.value) for m in app.markdown)
     assert "PAST_THE_GATE" not in rendered
 
 
-def test_wrong_password_is_rejected(monkeypatch):
-    app = run_gate(monkeypatch, production=True, secrets={"treasury": {"password": PASSWORD}})
+def test_wrong_password_is_rejected(monkeypatch, isolated_secrets):
+    app = run_gate(monkeypatch, isolated_secrets, production=True, secrets={"treasury": {"password": PASSWORD}})
     app.text_input[0].set_value("not-the-password")
     app.button[0].click().run()
     assert app.error
@@ -73,9 +113,9 @@ def test_wrong_password_is_rejected(monkeypatch):
     assert "PAST_THE_GATE" not in rendered
 
 
-def test_empty_submission_is_rejected(monkeypatch):
+def test_empty_submission_is_rejected(monkeypatch, isolated_secrets):
     """Submitting nothing must not match a configured password."""
-    app = run_gate(monkeypatch, production=True, secrets={"treasury": {"password": PASSWORD}})
+    app = run_gate(monkeypatch, isolated_secrets, production=True, secrets={"treasury": {"password": PASSWORD}})
     app.button[0].click().run()
     assert app.error
     rendered = " ".join(str(m.value) for m in app.markdown)
@@ -84,17 +124,18 @@ def test_empty_submission_is_rejected(monkeypatch):
 
 # --- Opens for the right password --------------------------------------------
 
-def test_correct_password_admits(monkeypatch):
-    app = run_gate(monkeypatch, production=True, secrets={"treasury": {"password": PASSWORD}})
+def test_correct_password_admits(monkeypatch, isolated_secrets):
+    app = run_gate(monkeypatch, isolated_secrets, production=True, secrets={"treasury": {"password": PASSWORD}})
     app.text_input[0].set_value(PASSWORD).run()
     app.button[0].click().run()
     rendered = " ".join(str(m.value) for m in app.markdown)
     assert "PAST_THE_GATE" in rendered
 
 
-def test_operator_email_is_used_when_configured(monkeypatch):
+def test_operator_email_is_used_when_configured(monkeypatch, isolated_secrets):
     app = run_gate(
         monkeypatch,
+        isolated_secrets,
         production=True,
         secrets={"treasury": {"password": PASSWORD, "operator_email": "nic@example.edu"}},
     )
@@ -113,8 +154,95 @@ def test_signed_in_operator_is_admin(monkeypatch):
 
 # --- Sandbox stays open ------------------------------------------------------
 
-def test_sandbox_needs_no_password(monkeypatch):
-    app = run_gate(monkeypatch, production=False, secrets={})
+# --- Google sign-in (VP portal) -----------------------------------------------
+#
+# `st.user` is backed by real OIDC session machinery that AppTest has no hook
+# to fake, so these test the pure resolution logic directly -- the part that
+# decides who gets in as what -- rather than the `st.login()`/`st.user` glue
+# in `login_gate`. That glue can only be verified against a real Google
+# sign-in once `[auth]` secrets exist; see HANDOFF.md.
+
+def test_a_profile_hit_becomes_the_recorded_role_and_committee():
+    identity = auth._identity_for_google_user(
+        {"email": "vp@ufl.edu"},
+        fetch_profile=lambda email: {"role": "officer", "committee_id": 8},
+    )
+    assert identity == auth.Identity(email="vp@ufl.edu", role=auth.Role.OFFICER, committee_id=8)
+
+
+def test_a_profile_with_no_committee_still_resolves():
+    """Treasurer/admin profiles have no single committee -- that must not refuse them."""
+    identity = auth._identity_for_google_user(
+        {"email": "treasurer@ufl.edu"},
+        fetch_profile=lambda email: {"role": "treasurer", "committee_id": None},
+    )
+    assert identity.role is auth.Role.TREASURER
+    assert identity.committee_id is None
+
+
+def test_no_matching_profile_is_refused_not_downgraded():
+    """
+    A miss must return None, not a fabricated MEMBER identity.
+
+    Falling back to a default role would mean anyone with any Google account
+    gets in as *something* -- exactly the open-registration hole FINDING F2
+    documents at the top of this module.
+    """
+    identity = auth._identity_for_google_user(
+        {"email": "stranger@gmail.com"}, fetch_profile=lambda email: None
+    )
+    assert identity is None
+
+
+def test_an_unrecognised_role_string_is_refused():
+    """A typo or a future role value in the data must not silently grant access."""
+    identity = auth._identity_for_google_user(
+        {"email": "vp@ufl.edu"},
+        fetch_profile=lambda email: {"role": "vp", "committee_id": 5},
+    )
+    assert identity is None
+
+
+def test_role_matching_is_case_insensitive():
+    assert auth._role_from_string("Officer") is auth.Role.OFFICER
+    assert auth._role_from_string("ADMIN") is auth.Role.ADMIN
+    assert auth._role_from_string("") is None
+    assert auth._role_from_string(None) is None
+
+
+def test_a_blank_email_claim_is_refused():
+    identity = auth._identity_for_google_user(
+        {"email": ""}, fetch_profile=lambda email: {"role": "admin"}
+    )
+    assert identity is None
+
+
+def test_google_auth_reports_unconfigured_with_no_auth_section(monkeypatch, isolated_secrets):
+    monkeypatch.delenv(settings.ENV_VAR, raising=False)
+    isolated_secrets.write_text('[treasury]\npassword = "x"\n', encoding="utf-8")
+    st.secrets._reset()
+    assert not auth.google_login_available()
+
+
+def test_google_auth_reports_configured_once_the_auth_section_exists(monkeypatch, isolated_secrets):
+    monkeypatch.delenv(settings.ENV_VAR, raising=False)
+    isolated_secrets.write_text(
+        "[auth]\n"
+        'client_id = "x"\n'
+        'client_secret = "y"\n'
+        'server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"\n'
+        'redirect_uri = "http://localhost:8501/oauth2callback"\n'
+        'cookie_secret = "z"\n',
+        encoding="utf-8",
+    )
+    st.secrets._reset()
+    assert auth.google_login_available()
+
+
+# --- Sandbox stays open ------------------------------------------------------
+
+def test_sandbox_needs_no_password(monkeypatch, isolated_secrets):
+    app = run_gate(monkeypatch, isolated_secrets, production=False, secrets={})
     rendered = " ".join(str(m.value) for m in app.markdown)
     assert "PAST_THE_GATE" in rendered
 

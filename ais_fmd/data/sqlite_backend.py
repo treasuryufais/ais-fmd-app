@@ -200,6 +200,59 @@ CREATE TABLE IF NOT EXISTS labeled_examples (
 
 CREATE INDEX IF NOT EXISTS idx_labeled_examples_source ON labeled_examples (source);
 CREATE INDEX IF NOT EXISTS idx_labeled_examples_committee ON labeled_examples (committee_id);
+
+-- Module M21: the expected membership roster, for dues reconciliation.
+--
+-- Until this existed the app could report who DID pay, recovered from transfer
+-- descriptions, but had nothing to compare that against -- so "who still owes?"
+-- could only be answered by typing a headcount and subtracting.
+--
+-- match_key is the normalised name (`domain.roster.match_key`), stored rather
+-- than recomputed so the uniqueness constraint and the matching rule cannot
+-- drift apart. Scoped per term: a roster is a snapshot of one semester's
+-- membership, and re-uploading replaces that term's roster rather than merging
+-- into it.
+CREATE TABLE IF NOT EXISTS members (
+    member_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    term_id        TEXT NOT NULL,
+    full_name      TEXT NOT NULL,
+    match_key      TEXT NOT NULL,
+    -- Additional normalised names this person answers to, comma-separated.
+    -- Stored rather than rebuilt on load because rebuilding needs the surname
+    -- as a separate field, which a roster with one full-name column does not
+    -- have. Without it a stored roster silently loses preferred-name matching
+    -- that worked at import time -- and on the Fall 2026 form that is 64 of 149
+    -- members.
+    alt_keys       TEXT,
+    preferred_name TEXT,
+    -- Whether they certified on the membership form that they had paid.
+    claims_paid    INTEGER NOT NULL DEFAULT 0,
+    email          TEXT,
+    ufid           TEXT,
+    committee_id   INTEGER,
+    notes          TEXT,
+    source_file    TEXT,
+    uploaded_by    TEXT,
+    uploaded_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (term_id, match_key)
+);
+
+CREATE INDEX IF NOT EXISTS idx_members_term ON members (term_id);
+
+-- Module M22: VP/officer -> committee assignment, for the committee-scoped
+-- portal (`views/Officer.py`). Keyed by email so a signed-in Google identity
+-- (Streamlit's native OIDC, not Supabase Auth -- see migrations/002 for why)
+-- can be looked up directly, with no separate account-creation step. Not
+-- term-scoped: one active assignment per person, changed when it changes,
+-- same shape as `migrations/002_deferred_features.sql`.
+CREATE TABLE IF NOT EXISTS profiles (
+    email        TEXT PRIMARY KEY,
+    display_name TEXT,
+    role         TEXT NOT NULL DEFAULT 'member',
+    committee_id INTEGER,
+    created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+    created_by   TEXT
+);
 """
 
 
@@ -240,6 +293,11 @@ class SqliteBackend(Backend):
         earlier version.
         """
         additions = {
+            "members": [
+                ("alt_keys", "TEXT"),
+                ("preferred_name", "TEXT"),
+                ("claims_paid", "INTEGER NOT NULL DEFAULT 0"),
+            ],
             "terms": [
                 ("locked", "INTEGER NOT NULL DEFAULT 0"),
                 ("locked_at", "TEXT"),
@@ -412,6 +470,192 @@ class SqliteBackend(Backend):
 
     def fetch_merchants(self) -> pd.DataFrame:
         return self._read("SELECT * FROM merchants ORDER BY hit_count DESC")
+
+    def fetch_members(self, term_id: str | None = None) -> pd.DataFrame:
+        if term_id:
+            return self._read(
+                "SELECT * FROM members WHERE term_id = ? ORDER BY full_name", (term_id,)
+            )
+        return self._read("SELECT * FROM members ORDER BY term_id, full_name")
+
+    def replace_members(
+        self, term_id: str, members: list[dict], source_file: str, actor: str
+    ) -> UpdateResult:
+        """
+        Replace one term's roster wholesale.
+
+        Replace rather than merge: a membership export is a snapshot of who is
+        on the roster *now*, so a name absent from the new file is a name that
+        left. Merging would make removals impossible and quietly inflate the
+        denominator of every collection-rate figure from then on.
+
+        Both statements run in one transaction, so a failure part-way cannot
+        leave the term with no roster at all.
+        """
+        result = UpdateResult()
+        if not term_id:
+            result.error = "A term is required to store a roster."
+            return result
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN")
+                connection.execute("DELETE FROM members WHERE term_id = ?", (term_id,))
+                connection.executemany(
+                    "INSERT INTO members "
+                    "(term_id, full_name, match_key, alt_keys, preferred_name, "
+                    " claims_paid, email, ufid, committee_id, notes, source_file, "
+                    " uploaded_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [
+                        (
+                            term_id,
+                            member.get("full_name"),
+                            member.get("match_key"),
+                            ",".join(member.get("alt_keys") or ()) or None,
+                            member.get("preferred_name") or None,
+                            1 if member.get("claims_paid") else 0,
+                            member.get("email") or None,
+                            member.get("ufid") or None,
+                            member.get("committee_id"),
+                            member.get("notes") or None,
+                            source_file,
+                            actor,
+                        )
+                        for member in members
+                    ],
+                )
+                connection.commit()
+            result.updated = len(members)
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    def add_member_alias(
+        self, term_id: str, match_key: str, alias_key: str, actor: str
+    ) -> UpdateResult:
+        """
+        Teach the roster a second name for one member, permanently.
+
+        This is how a "likely match" in the Roster page becomes a real one: a
+        treasurer confirms that "zackary florendo" is the same person as
+        "zack florendo", and every future statement matches directly instead of
+        landing in "likely matches" again. Same shape as "Remember this
+        merchant" on the Review Queue -- a human's one-time confirmation turned
+        into a rule the next import benefits from.
+
+        Appends rather than replaces `alt_keys`, so confirming one alias cannot
+        erase another confirmed earlier. A no-op, not an error, if the alias is
+        already there or is the member's own primary key.
+        """
+        result = UpdateResult()
+        if not (term_id and match_key and alias_key):
+            result.error = "Term, member and alias are all required."
+            return result
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT alt_keys FROM members WHERE term_id = ? AND match_key = ?",
+                    (term_id, match_key),
+                ).fetchone()
+                if row is None:
+                    result.error = f"No member {match_key!r} on the {term_id} roster."
+                    return result
+                existing = {
+                    part.strip()
+                    for part in str(row["alt_keys"] or "").split(",")
+                    if part.strip()
+                }
+                if alias_key == match_key or alias_key in existing:
+                    result.unchanged = 1
+                    return result
+                existing.add(alias_key)
+                connection.execute(
+                    "UPDATE members SET alt_keys = ? WHERE term_id = ? AND match_key = ?",
+                    (",".join(sorted(existing)), term_id, match_key),
+                )
+                connection.commit()
+            result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    # --- Module M22: VP portal access ----------------------------------------
+
+    def fetch_profiles(self) -> pd.DataFrame:
+        return self._read("SELECT * FROM profiles ORDER BY committee_id, display_name")
+
+    def fetch_profile(self, email: str) -> dict | None:
+        """
+        One person's access record, or None if they have never been assigned one.
+
+        A lowercase, case-folded lookup: Google's identity token capitalises
+        emails the way the account was originally typed, which does not always
+        match how a treasurer typed it into the roster.
+        """
+        if not email:
+            return None
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM profiles WHERE lower(email) = lower(?)", (email,)
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def upsert_profile(
+        self,
+        email: str,
+        role: str,
+        committee_id: int | None,
+        display_name: str,
+        actor: str,
+    ) -> UpdateResult:
+        """
+        Create or update one person's committee/role assignment.
+
+        This is what gates a real login, not a display preference -- a wrong
+        role here is a real access grant, which is why it goes through the
+        audited `UpdateResult` path like a term lock or a dues-rate change
+        rather than a plain write.
+        """
+        result = UpdateResult()
+        email = (email or "").strip()
+        if not email:
+            result.error = "An email is required."
+            return result
+        if role not in {"member", "officer", "treasurer", "admin"}:
+            result.error = f"Unknown role {role!r}."
+            return result
+        try:
+            with self._connect() as connection:
+                connection.execute(
+                    "INSERT INTO profiles (email, display_name, role, committee_id, created_by) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT (email) DO UPDATE SET "
+                    "  display_name = excluded.display_name, "
+                    "  role = excluded.role, "
+                    "  committee_id = excluded.committee_id",
+                    (email, display_name or None, role, committee_id, actor),
+                )
+                connection.commit()
+            result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    def remove_profile(self, email: str) -> UpdateResult:
+        result = UpdateResult()
+        if not email:
+            result.error = "An email is required."
+            return result
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "DELETE FROM profiles WHERE lower(email) = lower(?)", (email,)
+                )
+                connection.commit()
+            result.updated = cursor.rowcount
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
 
     def fetch_audit(self, limit: int = 500) -> pd.DataFrame:
         return self._read(

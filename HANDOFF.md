@@ -4,9 +4,65 @@
 **Read this first.** Written to be self-contained — you should not need any prior
 conversation.
 
-**Last verified 2026-08-15:** 429 tests passing (1 skipped); app runs; 892 real
-transactions; 590 human ground-truth labels; 0 spot-checks (see §5.1 — this is
-why no accuracy claim in here is verified).
+**Last verified 2026-08-26:** 562 tests passing (2 skipped); app runs from
+`C:\Users\durpy\ais-fmd-app` (see the correction to §1 below — the paths and
+two-repo model that section originally described do not match this machine).
+
+**Read this before trusting anything in §2, §5, §6, or most of §7:** the
+sandbox database **no longer contains** the 892-row historical dataset (2024-07
+.. 2026-07) or the 590 ground-truth labels those sections describe. Checked by
+direct query 2026-08-26 — the live sandbox now holds:
+
+```
+transactions        156   real Wells Fargo, 2026-07-01 .. 2026-08-21 (the Fall 2026 dues drive)
+terms                  3   FA26, SP26, SU26
+committeebudgets      28
+merchants               1
+labeled_examples        6
+members               149   real roster, term FA26 -- see §12.1
+profiles                0
+transaction_audit    201
+```
+
+**What happened:** `scripts/load_real_statement.py --into-sandbox` calls
+`backend.reset()` before loading — documented behavior ("replacing sandbox
+data"), used correctly this session to load a real Fall 2026 statement
+(`C:\Users\durpy\Downloads\Checking.csv`, not committed — see §12.1). Nobody
+in this session backed up the 892-row database first, because nobody realized
+until writing this note that no other copy of that dataset was known to exist.
+**I do not know where the source file for the 892-row / 590-label dataset
+is, or whether it still exists anywhere.** It was loaded by a session before
+this conversation's history. `C:\Users\durpy\Downloads\` currently has several
+un-triaged real files that might be relevant and might not —
+`VenmoStatement_January_2026.csv`, `VenmoStatement_February_2026.csv`,
+`Checking2.csv`, `Checking2 (1).csv`, `Jan1-Mar23 Transactions.csv`,
+`2025-04-15_transaction_download.csv`, `2026-03-31_transaction_download.csv`,
+`categorized_transactions (2).csv`, `categorized_transactions (4).csv` — none
+of these have been opened or identified. **If the 892-row baseline matters
+going forward** (it's what §5/§6's whole learning-loop evaluation is built on),
+sorting out whether one of these is it, or whether it's simply gone, is
+probably the single highest-value thing to do before trusting any evaluation
+number in this document.
+
+§2, §5, §6, and most of §7 below are left as they were: they document the
+**pipeline's logic and reasoning**, which is unaffected and still accurate. Only
+the specific numbers (892 rows, 590 labels, 67.7% coverage, 41.9% precision,
+etc.) describe data that is not currently loaded. Each is written to be
+reproducible — the scripts they name will just report different figures until
+that dataset is back, if it ever is.
+
+**§12 is new** (roster reconciliation + the VP portal's Google sign-in) and is
+the most likely thing an agent picking this up needs to read first if the user
+mentions either. Three dependency floors were also raised this session and are
+load-bearing, not cosmetic — `streamlit>=1.49`, `pandas>=2.3`, `openpyxl>=3.1.5`
+in `requirements.txt` — installing older pins reintroduces real bugs (§12.3).
+
+**Treasury answered the open questions on 2026-08-24** (§4.1–4.3, §7,
+`docs/treasury-questions.md`). Three of the changes move money — reimbursement
+routing, per-term dues rates, and Venmo net-of-fee matching — and they **have
+been verified against the 156-row Fall 2026 statement** (§12.1's numbers), but
+**not against the 892-row historical set**, for the reason above: that dataset
+isn't loaded here to verify against.
 
 This document describes **what is true now**, not what happened when. Where a
 decision looks odd, the reason it is that way is given, because in almost every
@@ -15,6 +71,34 @@ case it was odd for a reason discovered the hard way.
 ---
 
 ## 1. What this is, and what it is not
+
+**Corrected 2026-08-26 — read this before the rest of the section.** Everything
+below the line describes a two-repo model (`...ais-fmd-sandbox` rebuilding
+`...ais-fmd-app`, under a `durpy_7vdh2wz` user profile) that **does not match
+this machine**. This whole session worked in a single repo at
+`C:\Users\durpy\ais-fmd-app`, branch `sandbox/mvp-rebuild`, user `durpy`. I
+don't know when or why the split closed — whether the rebuild was merged into
+the original repo at some point before this session's history, whether this is
+a different machine entirely, or something else — and I'm not going to guess
+at history I can't verify. What's below is kept for the *reasoning* (still
+apparently accurate: this is still a sandbox, still local SQLite, still no
+network), with the concrete paths and commands corrected to what this session
+actually used.
+
+**Running it, in this repo:**
+
+```bash
+cd C:\Users\durpy\ais-fmd-app
+.venv/Scripts/python -m streamlit run app.py     # http://localhost:8501
+.venv/Scripts/python -m pytest                    # 562 passing, 2 skipped, ~90s (2026-08-26)
+```
+
+The sandbox database is `sandbox_data/ais_fmd_sandbox.db` inside this same
+repo (gitignored), not a separate repository. See the top of this document for
+what's actually in it right now — it is **not** the 892-row dataset the
+sections below reference.
+
+**Original text, for the reasoning even though the paths are stale:**
 
 `C:\Users\durpy_7vdh2wz\ais-fmd-sandbox` is a **rebuild** of the treasury app at
 `C:\Users\durpy_7vdh2wz\ais-fmd-app`. It is a **sandbox**: local SQLite, no
@@ -27,15 +111,9 @@ the same two modified files it had at the start (`requirements.txt`,
 sandbox is `ais-fmd-app/.claude/launch.json` — agent tooling config, untracked,
 no app code.
 
-**Nothing has been deployed. The production path (Supabase) has never executed.**
-
-### Running it
-
-```bash
-cd C:\Users\durpy_7vdh2wz\ais-fmd-sandbox
-.venv/Scripts/python -m streamlit run app.py     # http://localhost:8501
-.venv/Scripts/python -m pytest                    # 365 tests, ~55 s
-```
+**Nothing has been deployed. The production path (Supabase) has never executed
+against a live database** — the code path has, as of 2026-08-26, been fully
+implemented and reviewed (§12.2), just never run against real Postgres.
 
 | Script | Purpose |
 | --- | --- |
@@ -48,27 +126,51 @@ cd C:\Users\durpy_7vdh2wz\ais-fmd-sandbox
 | `scripts/verify_later_modules.py` | E2E check of locking/reimbursements/planner on a DB copy |
 | `scripts/verify_dues_schedule.py` | Proves per-term dues rates are behaviour-preserving on real data |
 | `scripts/spot_check.py [--apply CSV\|--report]` | Measures accuracy on auto-applied rows: sample → review CSV → `--apply` |
+| `scripts/apply_treasury_rates.py [--apply]` | Writes treasury's confirmed dues rates onto the terms rows; dry-run reports how many rows change classification |
 
 ### The safety model — do not weaken this
 
-Three independent layers:
+Three independent layers, designed so no single one has to hold:
 
-1. **`openai` and `supabase` are not installed** in the sandbox venv. Verify:
+1. **`openai` and `supabase` are not installed** in the sandbox venv, in
+   principle. Verify:
    `.venv/Scripts/python -c "import importlib.util as u; print(u.find_spec('openai'), u.find_spec('supabase'))"` → both `None`.
+   **On this machine, as of 2026-08-26, this layer is not intact** — both
+   packages ARE installed (`supabase==2.15.0`, `openai==3.3.1`), needed this
+   session to read the live Postgres schema while writing `supabase_backend.py`
+   (§12.2) and to check dependency versions. `test_openai_and_supabase_are_absent_from_the_sandbox_venv`
+   knows this is possible and **skips rather than fails** when it finds them —
+   by design, so a developer installing them for production work doesn't look
+   like a broken safety net. Layers 2 and 3 below are what were actually relied
+   on this whole session; they held.
 2. **Fails closed.** `AIS_FMD_ENV` must equal `production` (case-insensitive,
    whitespace-trimmed). Unset, empty, `prod`, `1`, `true` all resolve to sandbox.
    A stray `OPENAI_API_KEY` spends nothing — `settings.llm_enabled()` is `False`
    in sandbox mode. One documented override exists,
    `AIS_FMD_ALLOW_LLM_IN_SANDBOX=1`, which still cannot spend anything because
-   layer 1 removes the package. That independence is the point.
-3. **Separate directory, own git repo, no remote.**
+   layer 1, when intact, removes the package. That independence is the point
+   — and exactly why layer 1 being absent on this machine did not, on its own,
+   put anything at risk this session: nothing here ever set `AIS_FMD_ENV=production`.
+3. **Separate directory, own git repo, no remote.** True on whatever machine
+   this was originally written on; **not verified for this one** — see the
+   correction at the top of §1. What *is* true here: the sandbox database
+   (`sandbox_data/`) is gitignored, and nothing this session did set
+   `AIS_FMD_ENV=production` or wrote to the live Supabase project (confirmed —
+   every write this session went through `SqliteBackend`).
 
-`tests/test_sandbox_safety.py` asserts all of it. **If those tests fail, the
-sandbox is no longer safe to hand to anyone.**
+`tests/test_sandbox_safety.py` asserts what it can. **If `test_defaults_to_sandbox_when_unset`,
+`test_fails_closed_on_anything_but_exact_token`, or `test_llm_disabled_in_sandbox_even_with_a_key`
+fail, stop — layer 2 is broken and that's the one this whole safety model
+actually depends on.**
 
 ---
 
 ## 2. Verified current state
+
+**This snapshot is not what's in the sandbox right now** — see the notice at
+the very top of this document, dated 2026-08-26. Kept as-is below because §5,
+§6, and part of §7 reason about this specific dataset; treat it as "what was
+analyzed when those sections were written," not as today's `SELECT COUNT(*)`.
 
 ```
 transactions       892   real Wells Fargo data, 2024-07-09 .. 2026-07-08
@@ -93,6 +195,14 @@ ALL 892 rows : 411 by exact rule, 193 by scoring, 288 for review (59 with a prop
 PAST YEAR 398: 220 by exact rule,  97 by scoring,  81 for review (27 with a proposal)  → 79.6%
 ```
 
+**These predate the 2026-08-24 treasury rulings and have not been re-measured.**
+Expect them to move in both directions: the reimbursement change (§4.2) removes
+a whole class of automatic assignments, while the memo rules (§4.3) and the
+corrected dues rates (§4.1) add some back. Whichever way the net lands, coverage
+is now a more honest number than it was — the rows it dropped were being
+answered without being asked. Re-run `scripts/evaluate_categorizer.py` on the
+real data to replace these.
+
 The stored `budget_category` predates the scoring engine. Re-running
 categorization would resolve more; nothing has done so in bulk.
 
@@ -104,22 +214,30 @@ categorization would resolve more; nothing has done so in bulk.
 ais_fmd/
   settings.py            env detection + sandbox guard (fails closed)
   auth.py                roles: MEMBER < OFFICER < TREASURER < ADMIN
+                          + Google sign-in for the VP portal (§12.2, 2026-08-26)
   config/categories.py   committees, purposes, accounts — ONE source of truth
   data/
-    backend.py           interface both backends implement
+    backend.py           interface both backends implement -- 33 methods, all
+                          implemented by both backends as of 2026-08-26 (§12.2)
     sqlite_backend.py    sandbox
-    supabase_backend.py  production — NEVER EXECUTED
+    supabase_backend.py  production — code complete, NEVER RUN against real
+                          Postgres (§12.2)
     repositories.py      the single cache layer
-    schema_postgres.sql  production DDL + atomic import RPC
+    schema_postgres.sql  production DDL + atomic import RPC (older; see
+                          data/migrations/ for what's actually current)
+    migrations/          001 (additive, never run against live Supabase),
+                          002 (deferred features + profiles, also never run)
     seed.py              demo data generator
   domain/                business logic — NOTHING here imports streamlit
     money, terms, budgets, dedupe, reconcile, quality, dues,
-    alerts, report, scenarios, reimbursements, receipts, assistant
+    alerts, report, scenarios, reimbursements, receipts, assistant,
+    roster.py             membership matching + dues reconciliation (§12.1, new)
     categorize/          predicates, merchants, scoring, learning, context, bulk, llm, pipeline
     parsers/             venmo, wells_fargo, ledger
   ui/                    theme (Plotly template), charts, shell
-  views/                 15 Streamlit pages — layout and wiring only
-tests/                   365 tests
+  views/                 17 Streamlit pages — layout and wiring only
+                          (Roster.py, OfficerAccess.py new 2026-08-26)
+tests/                   562 passing, 2 skipped (2026-08-26)
 ```
 
 **Invariants enforced by tests** (`tests/test_ui_conventions.py`):
@@ -135,13 +253,20 @@ tests/                   365 tests
 This is where nearly all recent work went. **Order is load-bearing.**
 
 ```
-1. EXACT RULES      certainties: refund/formal/consulting(card 8408)/dues
+1. EXACT RULES      memo keyword / consulting(card 8408) / dues / reimbursement
 2. MERCHANT MEMORY  a human's explicit decision about this exact merchant
 3. SCORING          weighted evidence; confidence gate at 0.75
 4. THE MODEL        only the residual (never runs in sandbox)
    ↓ below threshold or no signal
    REVIEW QUEUE     with the proposal and its reasoning attached
 ```
+
+Within tier 1 the order is
+`memo → card 8408 → dues → dues-memo → reimbursement`. Memo before dues because
+of the \$50/\$65 collision (§4.3); dues-memo *after* dues so the schedule keeps
+first refusal (§4.3); reimbursement last because it resolves nothing — it only
+labels an outgoing transfer that no other rule could place, so it must not
+pre-empt one that could.
 
 ### Why the tiers sit where they do
 
@@ -191,10 +316,19 @@ this categorizer was originally specced from:
 | 5718 | Grant | Membership (5) | default — heuristic tier |
 | 3568 | Trent | **President (4)** | default — note: *not* Membership, despite 13 Macdintons visits |
 
-Seven other cards appear in the real data with **no documented owner**
-(0153, 7757, 9309, 3444, 7193, 1113, 5535). History suggests 0153 is strongly
-Meeting Food, but that is inferred from the categorizer's own past output, not
-verified. **Asking treasury who holds these is the cheapest available win.**
+Seven other cards appear in **the 892-row historical data** (see the top-of-doc
+notice — not currently loaded) with **no documented owner** (0153, 7757, 9309,
+3444, 7193, 1113, 5535). History suggests 0153 is strongly Meeting Food, but
+that is inferred from the categorizer's own past output, not verified.
+
+**The real Fall 2026 statement (§12.1) uses two different, ALSO undocumented
+cards: 3466 and 3526.** Neither matches the four confirmed above nor any of the
+seven historical ones — zero overlap with any card number this document has
+ever recorded, consistent with treasury's own comment that cards move with new
+VPs. `quality.check_card_roster_era` fires on exactly this and explains why in
+its detail text; see §7 for the current state of asking treasury who holds them.
+**Asking treasury who holds these (all of them — old and new) is the cheapest
+available win**, unchanged from before, just with a longer list now.
 
 ### 4.1 Per-term dues rates
 
@@ -232,10 +366,86 @@ Spring 2025 (27 × \$30, 9 × \$50 — exactly the handbook's "\$30/\$50" pair).
 They look like dues at an old rate, but that is treasury's call, not an
 inference to act on. See `docs/treasury-questions.md` §1.
 
-Venmo's fee is handled by `DuesSchedule(accept_venmo_net=True)` and is **off**.
-The three observed net amounts (24.43 / 29.34 / 39.14) do not fit one
-rate-plus-fee formula to the cent, so a bounded 3% window below gross is used
-rather than a fabricated exact formula.
+Venmo's fee is handled by `DuesSchedule(accept_venmo_net=True)` and is now **on**
+— treasury deprecated Venmo going forward and asked for historical rows to be
+counted net of fees, which bounds the risk: no new Venmo rows will arrive, so
+the window can only ever apply to history that already exists. The three
+observed net amounts (24.43 / 29.34 / 39.14) do not fit one rate-plus-fee
+formula to the cent, so a bounded 3% window below gross is used rather than a
+fabricated exact formula. The switch lives at `dues.ACCEPT_VENMO_NET_OF_FEES`,
+on the builder every caller uses; `DuesSchedule` itself stays strict so the
+pre-decision behaviour can still be reconstructed for diffing.
+
+### 4.2 Reimbursements belong to the committee they repaid
+
+Treasury: *"Reimbursements should go to the committee they represent. If
+someone spends money on a personal card and gets reimbursed then it was a
+committee expenditure."*
+
+`rule_refund` booked every negative Venmo/Zelle to committee 17 (Refunded) at
+full confidence. 17 is `kind="ledger"`, so those rows sat outside
+budget-vs-actual entirely — every dollar a member fronted and was repaid was
+invisible to the budget of the committee that actually spent it.
+
+It is now `rule_reimbursement`, and it has **no default committee**:
+
+* the memo is tried first (`rule_memo_committee`, §4.3);
+* failing that the row falls through to merchant memory and scoring like any
+  other row;
+* if nothing resolves it, it goes to the review queue carrying a sentence
+  explaining what it is and what is missing, rather than an empty cell.
+
+**This costs automatic coverage on purpose.** The coverage it removes was
+manufactured by answering a question nobody had asked. Expect the headline
+coverage number to fall and accuracy against the ledger labels to rise — the 18
+labeled rows that disagreed with the old behaviour agree with this one.
+
+Committee 17 keeps its meaning for money coming *back*: a merchant return is
+still a refund (`bulk.propose`), which is why the rule was renamed and not
+deleted.
+
+### 4.3 Memo keywords
+
+Treasury, asked whether a payment memo is enough to book a transfer on:
+*"Absolutely look at the memos they will clarify it well."*
+
+`MEMO_COMMITTEE_KEYWORDS` maps memo text to a committee: merch/crewneck/hoodie
+→ 13, road trip/St. Augustine → 14, formal/semi-formal → 18. It applies in
+**both directions** — incoming it books a member's hoodie payment to Merch,
+outgoing it books a formal reimbursement to Formal.
+
+This is safe where a rule keyed on a payer's *name* is not: `merchant_key`
+refuses to learn from an incoming transfer because a rule keyed on one member
+would mis-categorise everything they ever pay, whereas a memo travels with a
+single payment.
+
+**`rule_memo_committee` runs before `rule_dues`, and that order is
+load-bearing.** From Fall 2026 dues are \$50/\$65 and treasury warned that formal
+payments land near those amounts — *"there are also going to be some formal dues
+that might be around those amounts but the actual dues are a very specific
+amount"*. The collision is expected rather than hypothetical, and the memo is
+the only evidence that can break it.
+
+Two keywords are deliberately **absent**:
+
+* **"headshot"** (6 rows) — Professional Development vs Membership was left open.
+* **bare "ticket"** — appears on formal, road trip and event payments alike.
+
+**Dues memos are handled separately, by `rule_dues_memo`, and the placement is
+the design.** Treasury asked for a dues keyword *"in addition"* to the amount
+rule. In addition means **after**: everything in `MEMO_COMMITTEE_KEYWORDS` runs
+ahead of `rule_dues`, so putting "dues" there would shadow the per-term schedule
+and strip the term attribution off every dues row carrying the word.
+`rule_dues_memo` runs after instead — the schedule gets first refusal, and the
+memo only speaks for amounts the schedule turned down. The reason string always
+names the amount, because a dues row at a rate no term charged is a fact worth
+seeing.
+
+The original objection to this keyword was that it would mask a rate change.
+It does not: `check_possible_dues_rate_change` reads **raw amounts against the
+schedule**, not `budget_category`, so a booked row is still visible to it. That
+check now calls these rows out by name — a payer who writes "dues" at an amount
+no term charged is the strongest evidence of a rate change anywhere in the data.
 
 ---
 
@@ -348,15 +558,38 @@ four-tier pipeline says nothing about the pipeline.
 
 | Finding | Status |
 | --- | --- |
-| **`DUES_AMOUNTS` was pinned to Fall 2024 rates** `(35.00, 52.50)`. Rates are now per-term data (`terms.dues_rates`) via `DuesSchedule` — see §4.1. **The rates themselves are still unknown and still unverified**; every term carries a seeded copy of the old constant, marked unconfirmed. | **Mechanism fixed; rates still needed from treasury** |
-| **Venmo dues arrive net of fees** — historical amounts are `24.43`, `29.34`, `39.14` ($25/$30/$40 minus Venmo's cut). `DuesSchedule(accept_venmo_net=True)` handles it and is **off by default**, because booking net-of-fee income is a treasurer's call. | **Mechanism built, switched off — awaiting decision** |
-| **Outgoing reimbursements may be in the wrong bucket.** `rule_refund` books every negative Venmo/Zelle to committee 17 (Refunded), which is `kind="ledger"` and excluded from budget-vs-actual. The 2023 treasurer instead booked a reimbursement to *the committee whose expense it repaid*. 18 labeled rows disagree. If the old way was right, **committee budgets currently understate reimbursed spend.** | **Open — accounting decision** |
+| **`DUES_AMOUNTS` was pinned to Fall 2024 rates** `(35.00, 52.50)`. Rates are now per-term data (`terms.dues_rates`) via `DuesSchedule` — see §4.1. Treasury supplied Fall 2026 (**\$50 / \$65**) and confirmed the previous term at \$35/\$52.50. Earlier terms are still unconfirmed. | **Resolved for the current term** — `dues.CONFIRMED_DUES_RATES`, applied by `scripts/apply_treasury_rates.py` |
+| **Venmo dues arrive net of fees** — historical amounts are `24.43`, `29.34`, `39.14` ($25/$30/$40 minus Venmo's cut). Treasury deprecated Venmo going forward and asked for historical rows to be counted net of fees. | **Resolved — on.** `dues.ACCEPT_VENMO_NET_OF_FEES` |
+| **Outgoing reimbursements were in the wrong bucket.** `rule_refund` booked every negative Venmo/Zelle to committee 17 (Refunded), `kind="ledger"` and excluded from budget-vs-actual. 18 labeled rows disagreed. | **Resolved — reimbursements now hit the committee they repaid.** See §4.2 |
 | **`bar-merchant → Membership` is over-weighted** at 2.5; measured precision on historical labels is 38%. Largest confusion is `Membership → Consulting` (8 rows) — bar/restaurant spend on consulting projects. `salty dog saloon` is settled as **Consulting** across 10 human decisions. Learned weight: 0.00. | Open — recalibrate once current-era labels exist |
 | **`mobile deposit → Sponsorship / Donation`** (9 human decisions). Answers the long-open question about the $15,400 of unexplained deposits. | Evidence available, not applied |
 
 ---
 
 ## 7. Decisions needed from a human
+
+**Most of this section was answered on 2026-08-24** — see
+`docs/treasury-questions.md` for what was decided and
+`tests/test_treasury_decisions.py` for the assertions. Resolved: per-term dues
+rates for the current term (§4.1), Venmo fee handling (§4.1), reimbursement
+accounting (§4.2), and memo keywords (§4.3, which covers 7.5 below).
+
+**Still open, in priority order:**
+
+* **7.1** — the disputed purpose mappings. Treasury: *"I'm not sure, keep it as
+  an open question."* 89 transactions, Food & Drink the larger exposure.
+* **7.2** — deduplication semantics. Never asked.
+* **The card roster, now nine undocumented cards, not seven.** Treasury said
+  the numbers will follow, and that cards move with new VPs — confirmed since:
+  the real Fall 2026 statement uses cards 3466/3526, which match nothing ever
+  recorded in this document (§4). Nothing was guessed — see `quality.check_card_roster_era`,
+  which reports the sharper version of this risk: the four *documented* cards
+  were confirmed for the 2024-2026 cohort and Fall 2026 began a new one.
+* **"Headshot" memos** — Professional Development or Membership, 6 rows.
+* **7.4** — bulk merchant mappings. Unchanged and still the largest single win.
+
+The originals are kept below, since an answer only means something next to the
+question it answered.
 
 These change financial meaning. **Do not decide them by inference.**
 
@@ -386,12 +619,14 @@ open questions: `publix gainesville` (31 rows, −$836, food but off Tue/Wed),
 `mobile deposit` (9 rows, +$15,400 — but see §6), Zelle memos saying "headshot"
 (6 rows, Prof. Dev. vs Membership both defensible).
 
-**7.5 — Memo-keyword rules.** 120 residual rows are incoming member Zelle
-payments. `merchant_key` refuses to learn from them by design (a rule keyed on a
-member's name would mis-categorise everything they pay), but the memo often says
-what the payment was for: 13 rows/$580 say "hoodie"/"tshirt" (Merch 13), 5
-rows/$447 say "road trip" (14). One-line additions to `predicates.py`, but they
-book real income.
+**7.5 — Memo-keyword rules. RESOLVED 2026-08-24 — see §4.3.** 120 residual rows
+are incoming member Zelle payments. `merchant_key` refuses to learn from them by
+design (a rule keyed on a member's name would mis-categorise everything they
+pay), but the memo often says what the payment was for: 13 rows/$580 say
+"hoodie"/"tshirt" (Merch 13), 5 rows/$447 say "road trip" (14). Treasury:
+*"Absolutely look at the memos they will clarify it well."* Implemented as
+`MEMO_COMMITTEE_KEYWORDS`. Headshots (6 rows) are still excluded — that call was
+not made.
 
 ---
 
@@ -413,12 +648,19 @@ passed 103 tests and then failed on the first real file — the real export had
 original app would have imported all 892 rows as $0.00. The Venmo parser is in
 exactly that pre-contact state. This compounds with the Venmo-fee dues issue (§6).
 
-**8.4 — Supabase backend: 7 of 25 interface methods unimplemented.**
-Missing: `fetch_reimbursements`, `create_reimbursement`, `decide_reimbursement`,
+**8.4 — RESOLVED 2026-08-26, unverified.** `SupabaseBackend` used to be missing
+7 of `Backend`'s interface methods (`fetch_reimbursements`,
+`create_reimbursement`, `decide_reimbursement`,
 `link_reimbursement_to_transaction`, `fetch_receipts`, `store_receipt`,
-`set_term_lock`, plus the new `fetch_labeled_examples` / `insert_labeled_examples`.
-`schema_postgres.sql` also lacks DDL for reimbursements, receipts, term locking
-and `labeled_examples`. Nothing in the production path has ever run.
+`set_term_lock`) plus `fetch_labeled_examples`/`insert_labeled_examples`. All
+are now implemented, alongside 7 more written the same session for the roster
+and VP-portal features (§12). Full detail, including a real bug caught and
+fixed before it ever ran, is in §12.2's "Also outstanding" list — not repeated
+here to avoid the two sections disagreeing the way they briefly did today.
+**The DDL for reimbursements/receipts/term-locking (`migrations/002`) and for
+`members`/`profiles` (`migrations/001` and `002`) is written; none of it has
+been run against the live database.** That, not the Python code, is what
+"nothing in the production path has ever run" now actually refers to.
 
 **8.5 — Smaller items.** `sqlite_backend.py` and `Treasury.py` are both large and
 doing several jobs. `Dashboard.py:169` reaches into `charts._height` (private).
@@ -481,15 +723,24 @@ fills merchant memory, and makes weight-fitting meaningful. Filter the queue to
 "Flagged: scored but uncertain" — those rows carry a proposal and its reasoning
 and take seconds each.
 
-**P2 — Send `docs/treasury-questions.md`.** One message, five questions,
-already drafted with the numbers attached. It unblocks the dues rates (§4.1),
-the seven undocumented cards, the reimbursement accounting decision (which is
-roughly half of all measured error), the Venmo fee question, and two mapping
-calls. Nothing else on this list moves until these are answered.
+**P2 — ~~Send `docs/treasury-questions.md`~~. Answered 2026-08-24.** Four of
+five resolved; the code changes have landed and are asserted in
+`tests/test_treasury_decisions.py`. What remains from it: the disputed purpose
+mappings (7.1), the seven card numbers, and the headshot call.
 
-**P3 — Enter the dues rates once treasury answers**, in Treasury → Terms. This
-is data entry, not code: the mechanism landed (§4.1), the rates did not. Until
-then Data Quality correctly reports all 9 terms as unconfirmed.
+**P3 — Run `scripts/apply_treasury_rates.py` against the real database.** The
+rates are recorded in `dues.CONFIRMED_DUES_RATES`; this writes them onto the
+terms rows. Dry-run first — it reports how many rows change classification in
+each direction, and a rate correction can take dues *away* as well as add them.
+
+**Check the Fall 2026 term row exists before anything else.** It began
+2026-08-15 at rates the app did not know, so dues for the current term have been
+falling silently into the review queue since then. If the term row is missing
+entirely, its payments take the default rates and the script says so.
+
+```bash
+.venv/Scripts/python scripts/apply_treasury_rates.py
+```
 
 **P4 — Run a spot-check round.** The tooling now exists
 (`scripts/spot_check.py`, §5.1); nobody has reviewed a sample with it yet.
@@ -505,6 +756,13 @@ has ever had for the rows it books without asking.
 bulk-apply path with the same propose/confirm discipline as
 `propose_merchants.py`.
 
+**This is now more urgent than it was, and it moves money.** The reimbursement
+ruling (§4.2) means every stored row currently sitting in committee 17 that was
+an outgoing transfer is in the wrong bucket, and re-running is what moves them
+into the committees whose budgets they belong to. Until it runs, budget-vs-actual
+still understates reimbursed spend exactly as before — the rule changed, the
+stored data did not.
+
 **P6 — Wire the model pass** for the genuine residual, using
 `context.build_prompt_for`. Only worth it once a real API key exists; note the
 residual splits into ~54 past-year rows with *no signal at all* (mostly
@@ -514,13 +772,38 @@ smaller set of genuinely contested rows where reasoning would.
 **P7 — Test the Venmo parser against a real export** (§8.3), which also unblocks
 the Venmo dues-fee question.
 
-**P8 — Finish the production path** (§8.4). Only start with a throwaway Supabase
-project. Do not set `AIS_FMD_ENV=production` before the missing methods, the DDL,
-and a `natural_key` backfill all exist.
+**P8 — Finish the production path** (§8.4, §12.2). The missing methods are now
+written (P15 covers testing them). What's left: run the DDL (P14), get a
+`natural_key` backfill script written (nothing does this yet, needed for
+production dedupe to work at all), and only then consider
+`AIS_FMD_ENV=production` — on a throwaway Supabase project first, never the
+org's real one, per §8.4.
 
 **P9 — Headless tests for write paths** (§8.2).
 
 **P10 — Split the large files**; alerts delivery; `charts._height` privacy leak.
+
+**P11 — Chase the 7 disputed / 6 unmatched roster payments** (§12.1). Data
+problem, not code — the Roster page has both lists ready to export.
+
+**P12 — Register the Google OAuth app + add `[auth]` to production secrets**
+(§12.2). Two external steps, ~15 minutes total, blocking everything else about
+the VP portal. Nothing else on this list moves until this exists — same
+shape as P2 was for the treasury questions.
+
+**P13 — Once P12 exists: manually verify a real Google sign-in**, both a
+`profiles` hit and a miss. This is the one part of §12.2 that could not be
+tested from here.
+
+**P14 — Run migration 001, then 002's `profiles` table, against live
+Supabase** (§12.2, §8.4). Prerequisite for P12/P13 to mean anything in
+production rather than just in this sandbox.
+
+**P15 — Verify `SupabaseBackend` against a throwaway Supabase project**
+(§8.4/§12.2, code done 2026-08-26). All 17 previously-missing methods are
+written; none have run against a real Postgres instance. Do this before P14
+touches the org's actual database — it's exactly the kind of bug a throwaway
+project is for catching first.
 
 ---
 
@@ -528,24 +811,37 @@ and a `natural_key` backfill all exist.
 
 Read in this order:
 
-1. `ais_fmd/settings.py` — the safety model, ~110 lines
-2. `ais_fmd/config/categories.py` — the domain vocabulary
-3. `ais_fmd/domain/categorize/pipeline.py` — the tier order and why it is that order
-4. `ais_fmd/domain/categorize/scoring.py` — how confidence is actually computed
-5. `ais_fmd/domain/categorize/predicates.py` — the exact rules
-6. `ais_fmd/domain/parsers/wells_fargo.py` — the module with the most scar
+1. **This whole document**, top to bottom — the notice at the very top about
+   the missing 892-row dataset changes how several later sections should be
+   read.
+2. `ais_fmd/settings.py` — the safety model, ~110 lines (§1's corrected
+   "safety model" note explains what's actually intact on this machine)
+3. `ais_fmd/config/categories.py` — the domain vocabulary
+4. `ais_fmd/domain/categorize/pipeline.py` — the tier order and why it is that order
+5. `ais_fmd/domain/categorize/scoring.py` — how confidence is actually computed
+6. `ais_fmd/domain/categorize/predicates.py` — the exact rules
+7. `ais_fmd/domain/parsers/wells_fargo.py` — the module with the most scar
    tissue; its docstring explains three real failures
-7. `tests/test_real_layouts.py` — what a real statement actually looks like
-8. `tests/test_views.py` — how to run a page headlessly; extend `use_db` /
+8. `tests/test_real_layouts.py` — what a real statement actually looks like
+9. `tests/test_views.py` — how to run a page headlessly; extend `use_db` /
    `run_view` to cover a new page
+
+**If the user mentions the roster, dues reconciliation, VP access, or Google
+sign-in:** skip ahead to §12 before doing anything else — it's self-contained
+and covers all four.
 
 Then run, before changing anything:
 
 ```bash
 .venv/Scripts/python -m pytest
-.venv/Scripts/python scripts/evaluate_categorizer.py --fit
 .venv/Scripts/python scripts/profile_hotpath.py
 ```
+
+`evaluate_categorizer.py --fit` is deliberately not in that list any more — it
+reasons about the 892-row/590-label dataset, which per the top-of-document
+notice is not currently loaded. Running it will not error, but the numbers it
+prints describe whatever 156-row Fall 2026 statement is actually in the
+sandbox, not what §5/§6 discuss.
 
 ### Working style that has paid off here
 
@@ -558,3 +854,192 @@ Then run, before changing anything:
   the transaction updates were both proven on a copy first.
 * **Separate "the tool proposes" from "the human decides."** Anything that
   changes which committee real money is booked against is a treasurer's call.
+
+---
+
+## 12. Roster reconciliation and the VP portal (2026-08-26)
+
+Two features landed in one session, on top of the 2026-08-24 treasury rulings
+(§4.1–4.3). Both are code-complete and tested against real data; both have
+concrete, external, human-only steps left before either is actually usable in
+production. Read this section before starting either one.
+
+### 12.1 Roster & dues reconciliation (module M21)
+
+`ais_fmd/domain/roster.py` + `ais_fmd/views/Roster.py`. Answers "who still
+owes dues" against an uploaded membership list, not just "how much came in."
+
+**Why matching is its own module, not a string comparison.** Three properties
+of the real Fall 2026 data make `payer == member` wrong often enough to be
+useless: Wells Fargo emits names in both orders in the same file
+("SCHUCK JOHN" and "CAMERYN WEITZ"); people pay dues on each other's behalf and
+say so in the memo ("NICOLAS SANDERS ... JAYME RUDDS DUES"); and 64 of 149
+members on the Fall 2026 form go by a preferred name ("Katherine" → "Kate")
+that the bank data uses freely. `normalize_name` handles order and noise words;
+matching searches the memo *before* the payer, because a memo naming someone
+else is the payer's own instruction about who the money is for.
+
+**Verified against real data, loaded into this sandbox's `members` table**
+(term `FA26`, from `AIS Fall 2026 Membership Form (Responses).xlsx`, not
+committed — has 149 real names, emails, UFIDs):
+
+```
+149 on the roster, 142 paid, 7 outstanding, 95% collection, $7,040 credited
+6 payments ($315) name nobody on the roster at all
+7 members certify on the form they paid; no matching payment exists for them
+```
+
+Cross-checked: the 7 unpaid and the 6 unmatched-payment payers are **confirmed
+different people** (no name/token overlap in either direction) — two separate
+problems, not one seen from two sides. See the conversation this was built in
+for the full breakdown; not worth re-deriving, the numbers won't move until
+someone acts on them.
+
+**`Reconciliation.suggestions()`** finds near-misses a strict match refuses —
+"ZACKARY FLORENDO" against a roster reading "Zack Florendo" — and shows them to
+a treasurer to confirm, never auto-credits. Confirming (`add_member_alias`,
+wired to a button in the Roster page's "Likely matches" tab) teaches the
+roster that spelling permanently, so the next statement matches it directly.
+Two real ones were confirmed this session: Zack Florendo, Jayme Rudd.
+
+**Outstanding:**
+
+* **The 7 disputed and 6 unmatched people need a human, not code.** Chase list
+  is on the Roster page ("Says they paid" / "Unmatched payments" tabs,
+  downloadable as CSV).
+* **`members`'s Postgres DDL was out of date; fixed this session.**
+  `migrations/001_extend_live_schema.sql` already had the table (written
+  before the roster module existed) but was missing `alt_keys`,
+  `preferred_name`, and `claims_paid` — added now, since migration 001 has
+  never been run against live Supabase, so there was no live schema to
+  reconcile against. Verify this stays true before trusting the file: if 001
+  has since been applied, these three columns need `ALTER TABLE`, not a
+  `CREATE TABLE IF NOT EXISTS` that will silently no-op against an existing
+  table missing them.
+* **No bulk CSV import for the VP↔committee mapping (§12.2)** — manual add/edit
+  only. Fine for ~15 people, would want `roster.parse_roster`-style bulk import
+  if the org is larger.
+
+### 12.2 VP portal: Google sign-in (module M22)
+
+The actual VP-facing "my committee's budget" page already existed
+(`ais_fmd/views/Officer.py`, "My Committee") before this session — budget vs.
+actual, spending detail, reimbursements, all scoped to one committee. **That
+was never the gap.** The gap was access control: production had exactly one
+shared password, handing out full `Role.ADMIN` to whoever had it. There was no
+way for an individual VP to sign in and see only their own committee.
+
+**What was built:** `st.login()` / `st.user` — Streamlit's own native OIDC
+support (Authlib, built into Streamlit ≥1.42, confirmed present in the
+installed 1.62), configured against Google directly. **Not Supabase Auth** —
+the app talks to Supabase with its own service/anon key regardless of who's
+using it, so a Supabase Auth session would buy nothing here. This is a
+deliberate pivot from what `migrations/002_deferred_features.sql` originally
+assumed (see the note at the top of that file's `profiles` table, revised
+2026-08-26): `profiles` is now keyed by **email**, not `auth.users.id`.
+
+`ais_fmd/auth.py::login_gate()`: in production, tries Google sign-in first
+(only if `[auth]` is configured in secrets — completely inert otherwise, the
+existing password flow is byte-for-byte unchanged when Google isn't set up). A
+signed-in Google identity is looked up by email in `profiles`; a hit becomes
+that person's real `Identity` (role + committee); a miss is **refused, not
+downgraded** — falls through to the password form rather than silently
+granting MEMBER access, because a typo in `profiles` should look like an
+error, not like reduced access. The treasurer's own password login is
+completely unaffected either way.
+
+`ais_fmd/views/OfficerAccess.py` (new, TREASURER-gated, "Officer Access" in
+nav): add/edit/remove a VP's `email → role, committee` assignment. This is
+where the committee-mapping data goes once you have it.
+
+**What's tested:** the resolution logic (`auth._identity_for_google_user`,
+pure, dependency-injected — `tests/test_auth_gate.py`) and the `profiles`
+storage layer (`tests/test_officer_access.py`), 30 tests total. **What is
+*not* tested, and cannot be from here:** the actual `st.login()`/`st.user` OIDC
+round-trip. `AppTest` has no hook to fake an OIDC session, and there's no real
+Google Cloud client to test against yet. This is the one piece of this feature
+genuinely unverified — everything downstream of "a real email came back from
+Google" is covered; getting a real email back from Google is not.
+
+**Outstanding — nothing further to build until a human does two things
+outside this repo:**
+
+1. **Register a Google OAuth app** in Google Cloud Console, restricted to
+   `@ufl.edu`. Free, ~10 minutes. Produces a client ID and secret.
+2. **Add an `[auth]` section to the production `secrets.toml`:**
+   ```toml
+   [auth]
+   redirect_uri = "https://<your-deployed-url>/oauth2callback"
+   cookie_secret = "<a long random string>"
+   client_id = "<from step 1>"
+   client_secret = "<from step 1>"
+   server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+   ```
+
+Once both exist, **manually verify the round trip before trusting it**: sign
+in with a real `@ufl.edu` Google account that has (and separately, one that
+does *not* have) a `profiles` row, and confirm the second case is refused
+cleanly rather than falling through to something unexpected. Nobody has done
+this yet because nobody has a real Google Cloud app to test against.
+
+**Also outstanding, lower urgency:**
+
+* `Authlib>=1.3.2` is in `requirements-production.txt`, correctly absent from
+  the sandbox venv's normal install — matches the existing pattern for
+  `supabase`/`openai`.
+* ~~`SupabaseBackend` does not implement...~~ **Done 2026-08-26.** All 17
+  previously-missing methods are implemented — the original 7 from §8.4
+  (reimbursements, receipts, term locking, labeled examples) plus the 7 new
+  roster/profile ones from this session. `SupabaseBackend` now overrides every
+  method `Backend` declares; nothing falls through to a default any more.
+  **Genuinely untested, though** — this repo has zero test coverage for
+  `supabase_backend.py`, old methods or new, consistent with the "only start
+  with a throwaway Supabase project" guidance already in §8.4. Verify against
+  one before trusting any of it. One real bug was caught and fixed just from
+  reading the code carefully, without running it: three methods
+  (`decide_reimbursement`, `link_reimbursement_to_transaction`,
+  `set_term_lock`) originally set a timestamp column to the literal string
+  `"now()"` — a REST write inserts that as data, not SQL, so Postgres would
+  have rejected it as an invalid timestamp on every real call. Fixed with an
+  actual Python-side ISO timestamp (`_now()`). That the bug was only caught by
+  inspection, not by any test, is itself the argument for testing this against
+  a real project before it carries real traffic.
+* `profiles`'s DDL exists (migration 002, revised this session for
+  email-keying — see the note at the top of that table's definition) but,
+  like all of migration 002, has not been run against the live database. Run
+  002's `profiles` table (only that part — leave reimbursements/receipts/RLS
+  deferred as documented at the top of the file) once migration 001 is in and
+  before Google sign-in can work against production.
+* RLS remains **inapplicable, not just deferred**, under this architecture —
+  see the long note in `migrations/002_deferred_features.sql`. `auth.uid()`
+  will always be NULL because individual VPs never open their own Postgres
+  session; authorization has to stay application-level
+  (`auth.require(...)`), same as it already is everywhere else in this app.
+
+### 12.3 Three dependency floors were raised, and they're load-bearing
+
+Discovered getting the app running on this machine, before any of the M21/M22
+work started — real bugs, not preference. Full reasoning is in each package's
+comment in `requirements.txt`; summarized here so it survives a skim.
+
+* **`streamlit>=1.49`** (was `>=1.40`). Several views pass `width="stretch"`
+  to `st.dataframe`/`st.plotly_chart`. On 1.44 (what this machine had) that
+  raises `TypeError` at render time — every view test failed while the domain
+  test suite stayed green, which looks exactly like "the app is broken" rather
+  than "the floor is too low." `st.login()`/`st.user` (§12.2) also need a
+  recent Streamlit; 1.62 is what this session verified against.
+* **`pandas>=2.3`** (was `>=2.2`). 2.2.3 against the numpy version this venv
+  has makes `pd.Timedelta(days=n)` itself emit a `DeprecationWarning` that says
+  it will become a hard error — fires on the Review Queue's period filter.
+  Nothing to do with app logic; upgrading to 3.0.5 cleared it and also cleared
+  an unrelated `FutureWarning` in `domain/budgets.py`'s `fillna` call.
+* **`openpyxl>=3.1.5`** (was `>=3.1`). Pandas 3 refuses to read `.xlsx` files
+  with anything older — silently, as an `ImportError` the first time any code
+  tries `pd.read_excel`. Would have broken both statement uploads and the
+  roster's membership-form upload (§12.1) the first time either got real use.
+
+**If a fresh environment behaves differently than this document describes**,
+check these three versions before assuming the code changed. `pip install` from
+`requirements.txt` as committed should get all three automatically; the risk is
+an environment that had older pins installed before this session and never
+upgraded them.

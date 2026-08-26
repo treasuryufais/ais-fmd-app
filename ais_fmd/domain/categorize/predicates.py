@@ -12,8 +12,15 @@ Two changes of substance from the original:
 2. **Rule order is explicit and matches the documented priority.** The original
    Python override chain ran refund -> consulting -> formal -> dues ->
    membership, while the prompt next to it documented refund -> formal ->
-   consulting -> dues -> meeting food -> membership. The documented order is
-   used here, and the ordering lives in one list rather than an if/elif chain.
+   consulting -> dues -> meeting food -> membership. The ordering lives in one
+   list rather than an if/elif chain.
+
+   That order has since been revised twice by treasury rulings (2026-08-24).
+   The exact tier now runs memo -> card 8408 -> dues -> reimbursement:
+   `rule_refund` is gone, because an outgoing transfer is a committee's
+   expenditure rather than a ledger bucket, and the memo rule sits ahead of
+   dues because the Fall 2026 rates collide with formal ticket amounts. Both
+   are explained where the rules are defined.
 
 Every function in this module is pure: same input, same output, no I/O. That is
 what makes them the highest-value tests in the repository.
@@ -201,9 +208,91 @@ COMMITTEE_PURPOSE: dict[int, str] = {
     5: "Food & Drink",
     7: "Professional Development",
     8: "Meeting Food",
+    13: "Merch",
+    14: "Road Trip",
     17: "Refunded",
     18: "Formal",
 }
+
+# --- Memo vocabulary ---------------------------------------------------------
+#
+# Treasury, asked whether a payment memo is enough to book a transfer on:
+# "Absolutely look at the memos they will clarify it well."
+#
+# A memo is safe to key on where a payer's *name* is not. `merchants.merchant_key`
+# deliberately refuses to learn from an incoming transfer, because a rule keyed
+# on one member would mis-categorise everything that member ever pays. A memo is
+# the opposite: it is the payer's own statement of what this one payment was
+# for, and it travels with that payment only.
+#
+# ORDER AGAINST `rule_dues` IS LOAD-BEARING. From Fall 2026 the dues rates are
+# $50 and $65, and treasury warned that formal payments land near them --
+# "there are also going to be some formal dues that might be around those
+# amounts but the actual dues are a very specific amount". An amount collision
+# between dues and formal is therefore expected rather than hypothetical, and
+# the memo is the only evidence that can break the tie. So the memo rule runs
+# BEFORE the amount rule: what the payer says it was for outranks what the
+# amount happens to equal.
+#
+# Keywords are matched longest-first within a group so "semi formal" cannot be
+# claimed by a shorter overlapping entry. Groups are tried in listed order.
+#
+# NOT here, deliberately: "headshot" (6 rows). Treasury left the Professional
+# Development vs Membership call open, and a keyword rule cannot guess it.
+# Likewise bare "ticket" -- it appears on formal, road trip and event payments
+# alike, so on its own it names no committee.
+MEMO_COMMITTEE_KEYWORDS: tuple[tuple[tuple[str, ...], int, str], ...] = (
+    (("semi-formal", "semi formal", "semiformal", "formal"), 18, "formal"),
+    (
+        ("crewneck", "sweatshirt", "t-shirt", "tshirt", "t shirt", "hoodie", "merch"),
+        13,
+        "merch",
+    ),
+    (
+        ("saint augustine", "st. augustine", "st augustine", "road trip", "roadtrip"),
+        14,
+        "road trip",
+    ),
+)
+
+# Dues memos are handled separately by `rule_dues_memo`, NOT here, and the
+# distinction is the whole design.
+#
+# Treasury asked for a dues memo keyword "in addition" to the amount rule. In
+# addition is the operative word: it must not *replace* the schedule. So this
+# group is not in the table above, because everything above runs ahead of
+# `rule_dues` and would therefore shadow it. `rule_dues_memo` runs *after*
+# instead, which means the schedule still gets first refusal and keeps its term
+# attribution, and the memo only speaks for amounts the schedule turned down.
+#
+# The thing that made this safe to add: `quality.check_possible_dues_rate_change`
+# reads raw amounts against the schedule, not `budget_category`, so booking
+# these rows as dues does not hide a rate change from it. They are in fact the
+# strongest possible evidence of one -- someone naming the payment themselves at
+# an amount no term is known to have charged.
+DUES_MEMO_RE = re.compile(r"\b(dues|membership fee)\b", re.I)
+
+
+def mentions_dues(details: object) -> bool:
+    """Does this transfer's memo call itself dues?"""
+    return bool(DUES_MEMO_RE.search(_text(details)))
+
+
+def committee_from_memo(details: object) -> tuple[int, str, str] | None:
+    """
+    The committee a transfer memo names, if it names one.
+
+    Returns `(committee_id, group_label, matched_keyword)` so the rule can say
+    which word it acted on -- a treasurer overturning it needs to see that.
+    """
+    text = _text(details)
+    if not text:
+        return None
+    for keywords, committee_id, label in MEMO_COMMITTEE_KEYWORDS:
+        for keyword in keywords:
+            if keyword in text:
+                return committee_id, label, keyword
+    return None
 
 # Real Wells Fargo descriptions pad with runs of spaces:
 #   "PURCHASE                    AUTHORIZED ON   05/17 MERCHANT ..."
@@ -367,24 +456,84 @@ def looks_like_food_merchant(details: object) -> bool:
 #
 # Each takes the record dict and returns a Classification or None.
 
-def rule_refund(record: dict) -> Classification | None:
+# An outgoing transfer whose memo names no committee. Not a classification --
+# `committee_id` is None, so the pipeline keeps looking -- but it carries a
+# `rule` string, which is what the review queue shows. Before treasury's ruling
+# these rows were booked to 17 (Refunded) and disappeared from budget-vs-actual;
+# now they are a question, and the queue has to be able to ask it in words.
+REIMBURSEMENT_UNRESOLVED = Classification(
+    committee_id=None,
+    purpose=None,
+    rule=(
+        "Outgoing transfer — a reimbursement or a direct payment. It belongs to "
+        "the committee whose expense it covered, and the memo does not say which."
+    ),
+    confidence=0.0,
+    source="none",
+)
+
+
+def rule_reimbursement(record: dict) -> Classification | None:
+    """
+    Outgoing Venmo/Zelle: a committee's expenditure, not a ledger bucket.
+
+    This rule used to be `rule_refund`, and it booked every negative Venmo or
+    Zelle to committee 17 (Refunded) at full confidence. 17 is `kind="ledger"`,
+    so those rows sat outside budget-vs-actual entirely -- meaning every dollar
+    a member fronted on a personal card and was paid back for was invisible to
+    the budget of the committee that actually spent it. The 2023 treasurer had
+    booked them the other way, and 18 labeled rows disagreed with the app.
+
+    Treasury settled it: "Reimbursements should go to the committee they
+    represent. If someone spends money on a personal card and gets reimbursed
+    then it was a committee expenditure."
+
+    So there is no default committee here any more. The memo is tried first;
+    failing that the row falls through to merchant memory and scoring like any
+    other, and if nothing resolves it, a human is asked. That is a real loss of
+    automatic coverage, and it is the correct trade: the previous coverage was
+    manufactured by answering a question nobody had asked.
+
+    Committee 17 keeps its meaning for money coming *back* -- a merchant return
+    is still a refund (see `bulk.propose`) -- which is why this rule is renamed
+    rather than deleted.
+    """
     amount = parse_amount(record.get("amount"))
     if amount is None or amount >= 0:
         return None
     if not is_venmo_or_zelle(record.get("details"), record.get("account")):
         return None
-    return _assign(17, "Refund / reimbursement (negative Venmo or Zelle)", confidence=1.0)
+    return REIMBURSEMENT_UNRESOLVED
 
 
-def rule_formal(record: dict) -> Classification | None:
+def rule_memo_committee(record: dict) -> Classification | None:
+    """
+    A transfer whose memo says what the money was for.
+
+    Applies in both directions, and that symmetry is the point. Incoming, it
+    books a member's "hoodie" payment to Merch. Outgoing, it books a "formal"
+    reimbursement to Formal -- which under the old `rule_refund` would have gone
+    to Refunded and vanished from the Formal budget.
+
+    Supersedes the former `rule_formal`, which was this rule with a single
+    keyword and a positive-amount guard.
+    """
     amount = parse_amount(record.get("amount"))
-    if amount is None or amount <= 0:
+    if amount is None:
         return None
-    if "formal" not in _text(record.get("details")):
+    details, account = record.get("details"), record.get("account")
+    if not is_venmo_or_zelle(details, account):
         return None
-    if not is_venmo_or_zelle(record.get("details"), record.get("account")):
+    found = committee_from_memo(details)
+    if found is None:
         return None
-    return _assign(18, "Formal (positive Venmo or Zelle mentioning 'formal')", confidence=1.0)
+    committee_id, label, keyword = found
+    direction = "reimbursement" if amount < 0 else "payment"
+    return _assign(
+        committee_id,
+        f"{label.title()} ({direction} memo says '{keyword}')",
+        confidence=1.0,
+    )
 
 
 def rule_consulting(record: dict) -> Classification | None:
@@ -437,6 +586,40 @@ def rule_dues(record: dict, schedule: DuesSchedule | None = None) -> Classificat
     return _assign(1, f"Dues (dues rate{where} via Venmo or Zelle)", confidence=1.0)
 
 
+def rule_dues_memo(record: dict) -> Classification | None:
+    """
+    An incoming transfer the payer themselves called dues.
+
+    Runs *after* `rule_dues`, so by the time it fires the amount has already
+    failed to match any rate on file for that term. Treasury asked for this "in
+    addition" to the amount rule, and after is what "in addition" has to mean:
+    ahead of it, the memo would shadow the per-term schedule and every dues row
+    would lose the term attribution in its reason string.
+
+    What it catches is the case the schedule cannot: a rate nobody recorded, a
+    member paying a partial or late amount, or the first payment of a term whose
+    rate just changed. The reason string always names the amount, because a dues
+    row at an amount no term charged is a fact worth seeing rather than
+    smoothing over.
+
+    Positive only. A negative transfer memoed "dues" is a refund of dues, which
+    is a different question and goes to a human.
+    """
+    amount = parse_amount(record.get("amount"))
+    if amount is None or amount <= 0:
+        return None
+    details, account = record.get("details"), record.get("account")
+    if not is_venmo_or_zelle(details, account):
+        return None
+    if not mentions_dues(details):
+        return None
+    return _assign(
+        1,
+        f"Dues (memo says dues; ${amount:,.2f} is not a rate on file for this term)",
+        confidence=1.0,
+    )
+
+
 def rule_meeting_food(record: dict) -> Classification | None:
     """
     GBM meeting food: a food merchant, on a meeting weekday, that is not a bar.
@@ -475,11 +658,17 @@ def rule_membership_bar(record: dict) -> Classification | None:
 # treasury confirmed meeting food has been bought on the wrong person's card
 # because of past card-issuance problems, so it belongs in the heuristic tier
 # below `rule_meeting_food`, not up here where nothing can override it.
+# ORDER. `rule_memo_committee` must precede `rule_dues`: from Fall 2026 dues are
+# $50/$65 and formal payments land near those amounts, so an amount collision is
+# expected and only the memo can break it. `rule_reimbursement` comes last
+# because it resolves nothing -- it only labels an outgoing transfer the memo
+# could not place, and must not pre-empt a rule that could have placed it.
 EXACT_RULES: tuple[Callable[[dict], Classification | None], ...] = (
-    rule_refund,
-    rule_formal,
+    rule_memo_committee,
     rule_consulting,
     rule_dues,
+    rule_dues_memo,
+    rule_reimbursement,
 )
 
 # Keyword, weekday, and card-default heuristics. Confident, but each beatable
@@ -521,7 +710,13 @@ def exact_rules(
     """
     if dues is None:
         return EXACT_RULES
-    return (rule_refund, rule_formal, rule_consulting, partial(rule_dues, schedule=dues))
+    return (
+        rule_memo_committee,
+        rule_consulting,
+        partial(rule_dues, schedule=dues),
+        rule_dues_memo,
+        rule_reimbursement,
+    )
 
 
 def classify_exact(record: dict, *, dues: DuesSchedule | None = None) -> Classification:

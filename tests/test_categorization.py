@@ -7,13 +7,19 @@ and they encode the business rules that decide where money is booked.
 
 from __future__ import annotations
 
+from datetime import date
+from decimal import Decimal
+
 import pandas as pd
 import pytest
 
 from ais_fmd.domain.categorize.merchants import MerchantMemory, merchant_key
 from ais_fmd.domain.categorize.pipeline import categorize_records
 from ais_fmd.domain.categorize.predicates import (
+    DuesSchedule,
+    DuesWindow,
     classify_deterministic,
+    classify_exact,
     extract_purchase_date,
     looks_like_bar,
     looks_like_food_merchant,
@@ -71,28 +77,60 @@ def test_grocery_stores_are_never_read_as_bars():
 
 # --- Rules -------------------------------------------------------------------
 
-def test_refund_rule():
+def test_outgoing_transfer_is_no_longer_booked_to_refunded():
+    """
+    Treasury's ruling: a reimbursement is the committee's expenditure.
+
+    The old rule booked every negative Venmo/Zelle to 17 (Refunded), which is
+    `kind="ledger"` and therefore outside budget-vs-actual -- so reimbursed
+    spending never counted against the budget of the committee that spent it.
+    With no committee named, the row is now a question rather than an answer.
+    """
     result = classify_deterministic(
         {"amount": -45.0, "details": venmo("Reimbursement"), "account": "Venmo"}
     )
-    assert result.committee_id == 17
-    assert result.purpose == "Refunded"
+    assert result.committee_id is None
+    assert "committee" in result.rule.lower(), "the queue needs the reason in words"
+
+
+def test_outgoing_transfer_takes_the_committee_its_memo_names():
+    """The memo is what makes a reimbursement bookable."""
+    result = classify_deterministic(
+        {"amount": -120.0, "details": venmo("reimbursing hoodie order"), "account": "Venmo"}
+    )
+    assert result.committee_id == 13
+    assert result.purpose == "Merch"
 
 
 def test_dues_rule_matches_exact_amounts_only():
-    dues = {"amount": 35.00, "details": venmo("Fall dues"), "account": "Venmo"}
+    """
+    The amount rule on its own, with no memo to help it.
+
+    The memo deliberately says nothing about dues: `rule_dues_memo` would
+    otherwise catch the off-rate row and this would stop testing the amount
+    matching it exists to test. That the memo rule *does* catch it is asserted
+    in `test_treasury_decisions.py`.
+    """
+    dues = {"amount": 35.00, "details": venmo("payment"), "account": "Venmo"}
     assert classify_deterministic(dues).committee_id == 1
 
     not_dues = {**dues, "amount": 36.00}
     assert classify_deterministic(not_dues).committee_id != 1
 
 
-def test_formal_rule_requires_positive_amount_and_the_word():
+def test_formal_memo_books_formal_in_both_directions():
+    """
+    A formal memo means Formal whichever way the money moved.
+
+    Previously the negative case was caught by `rule_refund` and booked to
+    Refunded, so reimbursing someone who fronted a formal cost dropped out of
+    the Formal budget. Both directions are now the same committee.
+    """
     formal = {"amount": 55.0, "details": venmo("Spring formal ticket"), "account": "Venmo"}
     assert classify_deterministic(formal).committee_id == 18
 
     negative = {**formal, "amount": -55.0}
-    assert classify_deterministic(negative).committee_id == 17  # refund wins
+    assert classify_deterministic(negative).committee_id == 18
 
 
 def test_consulting_card_rule():
@@ -197,16 +235,38 @@ def test_bar_on_a_tuesday_is_membership_not_meeting_food():
     assert result.committee_id == 5
 
 
-def test_rule_priority_refund_beats_everything():
-    """Documented priority: refund first."""
-    result = classify_deterministic(
-        {
-            "amount": -35.00,
-            "details": venmo("formal refund"),
-            "account": "Venmo",
-        }
+def test_memo_outranks_the_dues_amount():
+    """
+    The collision treasury warned about, asserted.
+
+    From Fall 2026 dues are $50/$65 and formal payments land near them. A $50
+    incoming transfer memoed "formal" matches the dues rate exactly, so the two
+    rules genuinely both fire -- and the memo has to win, or formal ticket
+    income is booked as dues.
+    """
+    schedule = DuesSchedule(
+        [
+            DuesWindow(
+                term_id="FA26",
+                semester="Fall 2026",
+                start=date(2026, 8, 15),
+                end=date(2026, 12, 18),
+                rates=(Decimal("50.00"), Decimal("65.00")),
+                verified=True,
+            )
+        ]
     )
-    assert result.committee_id == 17
+    row = {
+        "amount": 50.00,
+        "details": venmo("formal ticket"),
+        "account": "Venmo",
+        "transaction_date": "2026-09-10",
+    }
+    assert classify_exact(row, dues=schedule).committee_id == 18
+
+    # Same amount, same term, no memo: that one really is dues.
+    plain = {**row, "details": venmo("")}
+    assert classify_exact(plain, dues=schedule).committee_id == 1
 
 
 # --- Merchant memory (M4) ----------------------------------------------------

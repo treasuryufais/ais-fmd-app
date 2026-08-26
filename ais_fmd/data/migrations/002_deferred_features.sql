@@ -67,33 +67,48 @@ ALTER TABLE public.receipts
     FOREIGN KEY (request_id) REFERENCES public.reimbursements (request_id);
 
 -- --- Roles ------------------------------------------------------------------
-
+--
+-- REVISED 2026-08-26 -- keyed by email, not by `auth.users`.
+--
+-- This table was originally designed for Supabase Auth: `user_id uuid
+-- REFERENCES auth.users`, populated when someone signs in through Supabase's
+-- own auth service, with `current_role_rank()` reading `auth.uid()` out of the
+-- Postgres session GUCs that Supabase's PostgREST layer sets per request.
+--
+-- The VP portal instead uses Streamlit's own native OIDC login (`st.login`,
+-- Streamlit >=1.42, via Authlib) against Google directly. The app's backend
+-- still connects to Supabase with its own service/anon key -- individual VPs
+-- never open a Postgres session of their own -- so `auth.uid()` would be NULL
+-- for every request regardless of who is using the app. Keying on it would
+-- make every policy below unconditionally deny, exactly the "app loses all its
+-- data" failure the original warning in this file describes, just for a
+-- different reason than an unconfigured login.
+--
+-- Keyed on email instead: it is the one identifier Google's identity token and
+-- a human-typed roster row can both agree on, and it needs no `auth.users` row
+-- to exist first. `ais_fmd.auth.login_gate` looks a signed-in Google identity
+-- up here directly.
 CREATE TABLE IF NOT EXISTS public.profiles (
-    user_id      uuid PRIMARY KEY REFERENCES auth.users (id) ON DELETE CASCADE,
-    email        text,
+    email        text PRIMARY KEY,
+    display_name text,
     role         text NOT NULL DEFAULT 'member'
         CHECK (role IN ('member', 'officer', 'treasurer', 'admin')),
     committee_id integer REFERENCES public.committees ("CommitteeID"),
-    created_at   timestamptz DEFAULT now()
+    created_at   timestamptz DEFAULT now(),
+    created_by   text
 );
 
-CREATE OR REPLACE FUNCTION public.current_role_rank()
-RETURNS integer
-LANGUAGE sql STABLE SECURITY DEFINER
-AS $$
-    SELECT COALESCE(
-        (SELECT CASE role
-                    WHEN 'admin'     THEN 40
-                    WHEN 'treasurer' THEN 30
-                    WHEN 'officer'   THEN 20
-                    ELSE 10
-                END
-         FROM public.profiles WHERE user_id = auth.uid()),
-        0
-    );
-$$;
-
 COMMIT;
+
+-- `current_role_rank()` / `auth.uid()`-based RLS, further below, does not
+-- apply to this architecture -- see the note on `profiles` above. Authorization
+-- stays application-level, the same way it already works for the SQLite
+-- backend and for every `auth.require(...)` call in `ais_fmd/views/*.py`. The
+-- RLS block is left in place, commented out, only in case a later decision
+-- adds real Supabase Auth sessions on top of this for defense-in-depth; as
+-- written today it would need `current_role_rank()` rewritten to key on email
+-- and a way to get the caller's verified email into the Postgres session
+-- (e.g. `SET LOCAL` from the app on each request), neither of which exists.
 
 -- ===========================================================================
 -- RLS -- SEPARATE STEP, EVEN MORE DEFERRED

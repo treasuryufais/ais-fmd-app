@@ -172,6 +172,38 @@ class Backend(ABC):
     ) -> UpdateResult:
         return self._unsupported("Per-term dues rates")
 
+    def fetch_members(self, term_id: str | None = None) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    def replace_members(
+        self, term_id: str, members: list[dict], source_file: str, actor: str
+    ) -> UpdateResult:
+        return self._unsupported("Membership roster")
+
+    def add_member_alias(
+        self, term_id: str, match_key: str, alias_key: str, actor: str
+    ) -> UpdateResult:
+        return self._unsupported("Member alias confirmation")
+
+    def fetch_profiles(self) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    def fetch_profile(self, email: str) -> dict | None:
+        return None
+
+    def upsert_profile(
+        self,
+        email: str,
+        role: str,
+        committee_id: int | None,
+        display_name: str,
+        actor: str,
+    ) -> UpdateResult:
+        return self._unsupported("VP portal access")
+
+    def remove_profile(self, email: str) -> UpdateResult:
+        return self._unsupported("VP portal access")
+
 
 def get_backend() -> Backend:
     """

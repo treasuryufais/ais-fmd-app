@@ -144,17 +144,31 @@ CREATE INDEX IF NOT EXISTS ix_labeled_examples_committee
 -- so the matching rule lives in one place.
 
 CREATE TABLE IF NOT EXISTS public.members (
-    member_id     integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    term_id       text NOT NULL REFERENCES public.terms ("TermID"),
-    full_name     text NOT NULL,
-    match_key     text NOT NULL,              -- normalised name, for payer matching
-    email         text,
-    ufid          text,
-    committee_id  integer REFERENCES public.committees ("CommitteeID"),
-    notes         text,
-    source_file   text,
-    uploaded_by   text,
-    uploaded_at   timestamptz DEFAULT now(),
+    member_id      integer GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    term_id        text NOT NULL REFERENCES public.terms ("TermID"),
+    full_name      text NOT NULL,
+    match_key      text NOT NULL,              -- normalised name, for payer matching
+    -- Added 2026-08-26 alongside domain/roster.py. A treasurer confirming a
+    -- "likely match" (e.g. "Zackary Florendo" for roster member "Zack
+    -- Florendo") writes the payer's spelling here, so the next statement
+    -- matches it directly. Comma-separated normalised keys, same encoding as
+    -- the SQLite column it mirrors.
+    alt_keys       text,
+    -- The name on a membership form, when it differs from the legal name
+    -- (e.g. "Katherine McNamara" filing as "Kate") -- one source of aliases,
+    -- distinct from alt_keys, which also holds treasurer-confirmed ones.
+    preferred_name text,
+    -- Self-certification from the membership form ("I have completed the
+    -- dues transaction"). A claim, not a receipt: `roster.Reconciliation.disputed`
+    -- is exactly the members where this is true and no payment matches.
+    claims_paid    boolean NOT NULL DEFAULT false,
+    email          text,
+    ufid           text,
+    committee_id   integer REFERENCES public.committees ("CommitteeID"),
+    notes          text,
+    source_file    text,
+    uploaded_by    text,
+    uploaded_at    timestamptz DEFAULT now(),
     CONSTRAINT members_term_match_key UNIQUE (term_id, match_key)
 );
 

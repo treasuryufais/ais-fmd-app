@@ -25,6 +25,52 @@ from .terms import attach_semester, date_range_for_semester
 
 DUES_COMMITTEE_ID = 1
 
+# Venmo deducts a fee, so dues paid that way arrive short of the gross rate and
+# an exact-amount rule never sees them as dues. Treasury settled both halves of
+# this: "Venmo will now be deprecated and no dues or money will come from it.
+# For venmo it should still be counted historically taking into account those
+# fees (if accurate)."
+#
+# So this is ON, and the risk of it being on is bounded in a way it was not when
+# the question was open: no new Venmo rows will ever arrive, which means the
+# window can only ever apply to history that already exists and has already been
+# looked at. It is set here, at the builder every page and script actually
+# calls, rather than on `DuesSchedule` itself -- the primitive stays strict and
+# unopinionated, and the decision lives in one place where it can be pointed at.
+#
+# "If accurate" is the right caveat and it is honoured rather than hidden: the
+# three observed net amounts (24.43, 29.34, 39.14 against $25/$30/$40) do not
+# fit any single rate-plus-fee formula to the cent, so `VENMO_FEE_TOLERANCE` is
+# a bounded 3% window below gross, not a reconstructed fee schedule. It accepts
+# all three observations and stays well clear of the next rate down.
+ACCEPT_VENMO_NET_OF_FEES = True
+
+
+# Rates treasury has actually confirmed, by semester. Everything not listed here
+# still carries the seeded copy of the old Fall 2024 constant and stays marked
+# unverified, which is what `quality.check_unverified_dues_rates` reports on.
+#
+# Fall 2026 is the one that changes behaviour. Dues are matched on an exact
+# amount, so the term after a rate change stops recognising dues silently --
+# no error, the payments simply pile up in the review queue. Fall 2026 began on
+# 2026-08-15 at rates the app did not know, which means that failure was already
+# in progress when treasury answered.
+#
+# Spring 2026 is recorded from "last term was 35 early and 52.5 late". Note this
+# changes no numbers: 35.00/52.50 was already the assumed default for every
+# term. Naming the term only moves it from "assumed" to "confirmed", so if
+# "last term" turns out to have meant Summer 2026 the only thing that is wrong
+# is which row shows a tick on the Data Quality page.
+#
+# Earlier terms are deliberately still open. Spring 2025 in particular carried
+# both rate pairs in the real data -- 54 payments at 35.00 and 4 at 52.50
+# alongside 27 at 30.00 and 9 at 50.00 -- and treasury has not said which of
+# those counted as dues. Guessing would move roughly $1,870 of income.
+CONFIRMED_DUES_RATES: dict[str, tuple[Decimal, ...]] = {
+    "Spring 2026": (Decimal("35.00"), Decimal("52.50")),
+    "Fall 2026": (Decimal("50.00"), Decimal("65.00")),
+}
+
 
 def parse_rates(value: object) -> tuple[Decimal, ...]:
     """
@@ -87,7 +133,7 @@ def schedule_from_terms(
     df_terms: pd.DataFrame,
     *,
     default_rates: tuple[Decimal, ...] = DUES_AMOUNTS,
-    accept_venmo_net: bool = False,
+    accept_venmo_net: bool = ACCEPT_VENMO_NET_OF_FEES,
 ) -> DuesSchedule:
     """
     Build the categorizer's dues schedule from the terms table.

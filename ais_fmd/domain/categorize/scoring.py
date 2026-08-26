@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import date
 
 from ...config.categories import COMMITTEE_BY_ID, committee_name
 from ..money import parse_amount
@@ -126,12 +127,46 @@ class CardAssignment:
 #
 # Card 8408 is handled by `rule_consulting` as a certainty and never reaches
 # scoring; it is listed here only so the registry is a complete picture.
+#
+# THESE ARE COHORT-SCOPED. Treasury, on the seven undocumented cards: "The cards
+# might change around with new VPs, I will input their numbers later." Card
+# numbers do not survive a handover -- a reissued card keeps looking like
+# evidence while pointing at the wrong committee, and card 8408 is worse than
+# the rest because `rule_consulting` treats it as a certainty that outranks
+# everything, including a human's merchant mapping. `ROSTER_ERA` records which
+# officer cohort these were confirmed under so
+# `quality.check_card_roster_era` can say so out loud when the cohort turns
+# over, rather than letting a stale roster quietly keep voting.
+ROSTER_ERA = CURRENT_ERA
+# Officers turn over between academic years, so the cohort ends when Summer
+# does -- not when classes start. Kept in step with the term boundary in
+# `load_real_statement.bootstrap_reference_data`: the real Fall 2026 statement
+# shows the new cohort already spending on 08-10, before the semester began.
+ROSTER_ERA_ENDS = date(2026, 7, 31)
+
 CONFIRMED_CARDS: dict[str, CardAssignment] = {
     "8313": CardAssignment(5, "Annalee", verified=True),
     "5718": CardAssignment(5, "Grant", verified=True),
     "3568": CardAssignment(4, "Trent", verified=True),
     "8408": CardAssignment(7, "Salena", verified=True),
 }
+
+# Deliberately empty, and this is a decision rather than an omission.
+#
+# Seven cards appear in the real statements with no documented owner (0153,
+# 7757, 9309, 3444, 7193, 1113, 5535), and treasury said to use a best guess
+# until they supply the real numbers. There is no honest guess available yet.
+# The only current-era evidence about those cards is this app's own
+# `budget_category`, which `categorize_frame` wrote at import time -- inferring
+# a roster from it would train the categorizer on its own output and harden its
+# existing mistakes into "evidence", which is the one thing the module docstring
+# above says never to do. The 2022-23 human labels cannot help either: they
+# belong to a different cohort with entirely different card numbers.
+#
+# The evidence that would justify filling this in is current-era human labels,
+# which `scripts/propose_card_roster.py` turns into candidate assignments as
+# soon as the review queue starts producing them.
+INFERRED_CARDS: dict[str, CardAssignment] = {}
 
 
 class CardRegistry:

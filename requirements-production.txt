@@ -4,3 +4,7 @@
 -r requirements.txt
 supabase>=2.15
 openai>=1.0
+# Powers auth.login_gate's Google sign-in path (st.login/st.user, Streamlit's
+# own OIDC support -- see ais_fmd/auth.py). Not needed in sandbox: the whole
+# login_gate function returns immediately there.
+Authlib>=1.3.2

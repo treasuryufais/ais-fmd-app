@@ -28,7 +28,7 @@ from ais_fmd.data.sqlite_backend import SqliteBackend
 from ais_fmd.domain.categorize.merchants import MerchantMemory
 from ais_fmd.domain.categorize.pipeline import categorize_frame
 from ais_fmd.domain.dedupe import split_new_and_duplicate
-from ais_fmd.domain.dues import schedule_from_terms
+from ais_fmd.domain.dues import CONFIRMED_DUES_RATES, format_rates, schedule_from_terms
 from ais_fmd.domain.parsers import wells_fargo
 
 ACTOR = "real-statement-test@sandbox.local"
@@ -48,11 +48,19 @@ def bootstrap_reference_data(backend: SqliteBackend, rows: pd.DataFrame) -> None
     start, end = dates.min().date(), dates.max().date()
 
     # Fall runs Aug-Dec, Spring Jan-May. Generate terms covering the whole range.
+    #
+    # FALL STARTS 08-01, NOT 08-15. The real Fall 2026 statement settles this:
+    # the dues drive opened on 08-12, eight days before classes, and 27 payments
+    # at the Fall rate landed before the 15th. With Fall starting mid-month
+    # those rows fall into Summer, which carries no rates, so the schedule falls
+    # back to the old default and $50 stops reading as dues -- the exact silent
+    # failure per-term rates exist to prevent, reintroduced by a term boundary.
+    # Dues arrive before term does.
     year = start.year
     while year <= end.year:
         for term_id, label, (s_month, s_day), (e_month, e_day) in (
             (f"SP{str(year)[2:]}", f"Spring {year}", (1, 5), (5, 15)),
-            (f"FA{str(year)[2:]}", f"Fall {year}", (8, 15), (12, 20)),
+            (f"FA{str(year)[2:]}", f"Fall {year}", (8, 1), (12, 20)),
         ):
             backend.insert_term(
                 term_id,
@@ -61,6 +69,7 @@ def bootstrap_reference_data(backend: SqliteBackend, rows: pd.DataFrame) -> None
                 date(year, e_month, e_day).isoformat(),
                 ACTOR,
             )
+            _apply_confirmed_rates(backend, term_id, label)
             backend.upsert_budgets(
                 term_id, {cid: 1500.0 for cid in BUDGETED_COMMITTEE_IDS}, ACTOR
             )
@@ -69,14 +78,29 @@ def bootstrap_reference_data(backend: SqliteBackend, rows: pd.DataFrame) -> None
     # Summer gap so nothing falls outside a term.
     year = start.year
     while year <= end.year:
+        term_id, label = f"SU{str(year)[2:]}", f"Summer {year}"
         backend.insert_term(
-            f"SU{str(year)[2:]}",
-            f"Summer {year}",
+            term_id,
+            label,
             date(year, 5, 16).isoformat(),
-            date(year, 8, 14).isoformat(),
+            date(year, 7, 31).isoformat(),
             ACTOR,
         )
+        _apply_confirmed_rates(backend, term_id, label)
         year += 1
+
+
+def _apply_confirmed_rates(backend: SqliteBackend, term_id: str, label: str) -> None:
+    """
+    Put treasury's confirmed rates on the term as it is created.
+
+    Without this the terms are born with no rates at all, every row falls back
+    to the module default, and the per-term schedule is inert on exactly the
+    data it was built for.
+    """
+    rates = CONFIRMED_DUES_RATES.get(label)
+    if rates:
+        backend.set_term_dues_rates(term_id, format_rates(rates), True, ACTOR)
 
 
 def main() -> int:

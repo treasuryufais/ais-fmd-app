@@ -128,8 +128,16 @@ def test_the_reason_names_the_term():
 # --- Venmo net-of-fee, opt-in ------------------------------------------------
 
 @pytest.mark.parametrize("net", ["24.43", "29.34", "39.14"])
-def test_venmo_net_amounts_are_rejected_by_default(net):
-    """Off by default: booking net-of-fee income is a treasurer's decision."""
+def test_the_primitive_stays_strict_by_default(net):
+    """
+    `DuesSchedule` itself does not decide policy.
+
+    Treasury enabled net-of-fee matching, but that decision is recorded once at
+    `dues.schedule_from_terms` (see `ACCEPT_VENMO_NET_OF_FEES`), not baked into
+    the matcher. Keeping the primitive strict is what lets a caller reconstruct
+    the pre-decision behaviour -- which `verify_dues_schedule.py` needs in order
+    to diff one against the other.
+    """
     window = DuesWindow("X", "Test", date(2026, 1, 1), date(2026, 12, 31),
                         (Decimal("25.00"), Decimal("30.00"), Decimal("40.00")))
     strict = DuesSchedule([window])
