@@ -10,12 +10,13 @@ from __future__ import annotations
 import streamlit as st
 
 from ais_fmd import auth, settings
+from ais_fmd.config.categories import committee_name
 from ais_fmd.data import repositories as repo
 from ais_fmd.domain import assistant
 from ais_fmd.domain import budgets as budget_domain
 from ais_fmd.ui import charts, shell, theme
 
-auth.require(auth.Role.MEMBER)
+identity = auth.require(auth.Role.MEMBER)
 
 shell.environment_banner()
 shell.page_header(
@@ -30,13 +31,25 @@ context = assistant.Context(
     budgets=bundle.budgets,
     terms=bundle.terms,
 )
+# A VP gets their own committee's rows and nothing else. Treasurers and admins
+# see everything; members already see org-wide totals on the Dashboard.
+if identity.role == auth.Role.OFFICER:
+    context = assistant.restrict_to_committee(context, identity.committee_id)
+    st.caption(
+        f"Answers are limited to **{committee_name(identity.committee_id)}**."
+        if identity.committee_id is not None
+        else "Your account isn't linked to a committee, so there is nothing to show yet."
+    )
 
 if bundle.transactions.empty:
     shell.empty_state("No data to ask about yet")
     st.stop()
 
+example_committee = (
+    committee_name(context.committee_id) if context.committee_id is not None else "Marketing"
+)
 EXAMPLES = [
-    "What's the total spending for the Marketing committee this semester?",
+    f"What's the total spending for the {example_committee} committee this semester?",
     "Which committees are over budget?",
     "How much income came in via Venmo?",
     "Show me all transactions over $500",
@@ -71,10 +84,11 @@ if question:
 
     with st.chat_message("assistant"):
         shell.say(result.text)
-        st.caption(
-            f"Answered by the `{result.tool}` tool"
-            + (f" with {result.arguments}" if result.arguments else "")
-        )
+        if result.tool not in ("", "none", "scope_refusal"):
+            st.caption(
+                f"Answered by the `{result.tool}` tool"
+                + (f" with {result.arguments}" if result.arguments else "")
+            )
 
         if result.table is not None and not result.table.empty:
             shell.dataframe(result.table.head(50))

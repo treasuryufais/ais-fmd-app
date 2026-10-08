@@ -48,6 +48,39 @@ class Context:
     transactions: pd.DataFrame
     budgets: pd.DataFrame
     terms: pd.DataFrame
+    # Set when the asker may only see one committee (a VP). The frames above
+    # have already been filtered to it; this records *why* they are partial.
+    committee_id: int | None = None
+    restricted: bool = False
+
+
+def restrict_to_committee(context: Context, committee_id: int | None) -> Context:
+    """
+    The same context with every row belonging to another committee removed.
+
+    Scoping is applied to the data, before any tool runs, rather than asked of
+    the tools or a prompt. A tool cannot leak a row it was never given, so a
+    question phrased to get around the rules has nothing to get at. Rows with no
+    committee (uncategorized, income) are dropped too: they are not provably
+    the VP's. A `None` committee fails closed to an empty context.
+    """
+    if committee_id is None:
+        transactions = context.transactions.iloc[0:0]
+        budgets = context.budgets.iloc[0:0]
+    else:
+        transactions = context.transactions[
+            (context.transactions["budget_category"] == committee_id).fillna(False)
+        ]
+        budgets = context.budgets
+        if "committeeid" in budgets.columns:
+            budgets = budgets[budgets["committeeid"] == committee_id]
+    return Context(
+        transactions=transactions,
+        budgets=budgets,
+        terms=context.terms,
+        committee_id=committee_id,
+        restricted=True,
+    )
 
 
 # --- Argument extraction -----------------------------------------------------
@@ -64,13 +97,17 @@ def _find_semester(question: str, context: Context) -> str | None:
     return None
 
 
-def _find_committee(question: str) -> str | None:
+def _mentioned_committee_ids(question: str) -> list[int]:
     lowered = question.lower()
-    matches = [
-        committee_name(committee_id)
+    return [
+        committee_id
         for committee_id in BUDGETED_COMMITTEE_IDS
         if committee_name(committee_id).lower() in lowered
     ]
+
+
+def _find_committee(question: str) -> str | None:
+    matches = [committee_name(committee_id) for committee_id in _mentioned_committee_ids(question)]
     # Longest match wins, so "Professional Development" beats "Development".
     return max(matches, key=len) if matches else None
 
@@ -384,20 +421,34 @@ TOOLS: tuple[Tool, ...] = (
 )
 
 
-def select_tool(question: str) -> Tool:
+def _mentions(lowered: str, keyword: str) -> bool:
+    """
+    Keyword match anchored at the start of a word, so "paid" does not fire on
+    "unpaid" and "list" does not fire on "specialist". The end is left open so
+    "expense" still matches "expenses".
+    """
+    keyword = keyword.strip()
+    lead = r"(?<![a-z])" if keyword[:1].isalnum() else ""
+    return re.search(lead + re.escape(keyword), lowered) is not None
+
+
+def select_tool(question: str) -> Tool | None:
     """
     Score every tool and pick the best, rather than returning on first match.
 
     This is the structural fix for F10: because all tools are scored, a question
     that mentions a committee *and* asks about spending routes on the spending
     intent instead of being captured by whichever branch happened to be first.
+
+    Returns None when nothing matches. The original fell back to committee
+    spending, which answered "what's the weather?" with a real dollar figure.
     """
     lowered = f" {question.lower()} "
-    best = TOOLS[-1]
+    best = None
     best_score = -1.0
 
     for tool in TOOLS:
-        hits = sum(1 for keyword in tool.keywords if keyword in lowered)
+        hits = sum(1 for keyword in tool.keywords if _mentions(lowered, keyword))
         if not hits:
             continue
         score = hits * 10 + tool.specificity
@@ -407,10 +458,38 @@ def select_tool(question: str) -> Tool:
     return best
 
 
+def _dont_know() -> Answer:
+    topics = "; ".join(tool.description.rstrip(".").lower() for tool in TOOLS)
+    return Answer(
+        text=(
+            "I don't know — that isn't something I can answer from the data, so I "
+            f"won't guess a number. I can answer: {topics}."
+        ),
+        tool="none",
+    )
+
+
+def _out_of_scope(context: Context) -> Answer:
+    own = committee_name(context.committee_id) if context.committee_id is not None else None
+    text = (
+        f"That asks about another committee. You can see only **{own}**'s figures."
+        if own
+        else "Your account isn't linked to a committee yet, so there are no figures I can show you."
+    )
+    return Answer(text=text, tool="scope_refusal")
+
+
 def answer_question(question: str, context: Context) -> Answer:
     if not question.strip():
         return Answer(text="Ask something about the finances.")
+    if context.restricted and (
+        context.committee_id is None
+        or any(cid != context.committee_id for cid in _mentioned_committee_ids(question))
+    ):
+        return _out_of_scope(context)
     tool = select_tool(question)
+    if tool is None:
+        return _dont_know()
     try:
         return tool.run(question, context)
     except Exception as exc:  # noqa: BLE001 - surfaced, never silently swallowed
