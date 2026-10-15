@@ -321,7 +321,8 @@ def test_f10_committee_spending_question_routes_to_spending_not_the_roster(terms
 
 def test_f10_answer_contains_real_numbers(terms, transactions):
     context = assistant.Context(
-        transactions=transactions, budgets=pd.DataFrame(), terms=terms
+        transactions=transactions, budgets=pd.DataFrame(), terms=terms,
+        scope=assistant.Scope(role="treasurer"),
     )
     answer = assistant.answer_question(
         "How much did the Marketing committee spend in Spring 2025?", context
