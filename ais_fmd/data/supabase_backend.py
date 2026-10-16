@@ -507,6 +507,100 @@ class SupabaseBackend(Backend):
             result.error = f"{type(exc).__name__}: {exc}"
         return result
 
+    # --- Sponsorship (M20). Needs migrations/012_sponsorship.sql. ------------
+
+    def set_term_sponsorship_goal(
+        self, term_id: str, goal: float | None, actor: str
+    ) -> UpdateResult:
+        """Same contract as `SqliteBackend.set_term_sponsorship_goal`: None clears it."""
+        result = UpdateResult()
+        try:
+            existing = (
+                self._admin.table("terms")
+                .select("sponsorship_goal")
+                .eq("TermID", term_id)
+                .maybe_single()
+                .execute()
+            )
+            if existing is None or existing.data is None:
+                result.error = f"Term {term_id} does not exist."
+                return result
+            previous = existing.data.get("sponsorship_goal")
+            if (previous is None and goal is None) or (
+                previous is not None and goal is not None and float(previous) == float(goal)
+            ):
+                result.unchanged = 1
+                return result
+
+            self._admin.table("terms").update({"sponsorship_goal": goal}).eq("TermID", term_id).execute()
+            self._audit(
+                transaction_id=None,
+                action="sponsorship_goal",
+                actor=actor,
+                field=term_id,
+                old_value="(none)" if previous is None else f"${float(previous):,.2f}",
+                new_value="(none)" if goal is None else f"${goal:,.2f}",
+            )
+            result.updated = 1
+        except Exception as exc:  # noqa: BLE001
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def set_transaction_sponsor_name(
+        self, transaction_id: int, sponsor_name: str | None, actor: str
+    ) -> UpdateResult:
+        """
+        Same contract as `SqliteBackend.set_transaction_sponsor_name`, including
+        the closed-term refusal: `locked_term_for` (migration 003) is the same
+        check `apply_transaction_edits` uses, so this is not a side door.
+        """
+        result = UpdateResult()
+        try:
+            existing = (
+                self._admin.table("transactions")
+                .select("sponsor_name,transaction_date")
+                .eq("transactionid", int(transaction_id))
+                .maybe_single()
+                .execute()
+            )
+            if existing is None or existing.data is None:
+                result.failed.append(transaction_id)
+                result.error = f"Transaction {transaction_id} does not exist."
+                return result
+
+            closed = self._admin.rpc(
+                "locked_term_for", {"p_date": existing.data.get("transaction_date")}
+            ).execute().data
+            if closed:
+                result.failed.append(transaction_id)
+                result.error = (
+                    f"This transaction falls in {closed}, which is closed. "
+                    f"Reopen the term before editing it."
+                )
+                return result
+
+            previous = existing.data.get("sponsor_name")
+            cleaned = (sponsor_name or "").strip() or None
+            if (previous or None) == cleaned:
+                result.unchanged = 1
+                return result
+
+            self._admin.table("transactions").update({"sponsor_name": cleaned}).eq(
+                "transactionid", int(transaction_id)
+            ).execute()
+            self._audit(
+                transaction_id=int(transaction_id),
+                action="update",
+                actor=actor,
+                field="sponsor_name",
+                old_value=previous,
+                new_value=cleaned,
+            )
+            result.updated = 1
+        except Exception as exc:  # noqa: BLE001
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
     def insert_labeled_examples(self, examples: list[dict], actor: str) -> UpdateResult:
         """
         Record human labels. Idempotent on `natural_key` via `ignore_duplicates`

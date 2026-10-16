@@ -187,6 +187,16 @@ class Backend(ABC):
     ) -> UpdateResult:
         return self._unsupported("Per-term dues rates")
 
+    def set_term_sponsorship_goal(
+        self, term_id: str, goal: float | None, actor: str
+    ) -> UpdateResult:
+        return self._unsupported("Sponsorship goal")
+
+    def set_transaction_sponsor_name(
+        self, transaction_id: int, sponsor_name: str | None, actor: str
+    ) -> UpdateResult:
+        return self._unsupported("Sponsor name")
+
     def fetch_members(self, term_id: str | None = None) -> pd.DataFrame:
         return pd.DataFrame()
 

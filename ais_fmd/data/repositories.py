@@ -338,6 +338,26 @@ def set_term_dues_rates(
     return result
 
 
+def set_term_sponsorship_goal(
+    term_id: str, goal: float | None, actor: str
+) -> UpdateResult:
+    """Record the sponsorship dollar goal for a term."""
+    result = backend().set_term_sponsorship_goal(term_id, goal, actor)
+    if result.updated:
+        invalidate()
+    return result
+
+
+def set_transaction_sponsor_name(
+    transaction_id: int, sponsor_name: str | None, actor: str
+) -> UpdateResult:
+    """Record who a sponsorship transaction was actually from."""
+    result = backend().set_transaction_sponsor_name(transaction_id, sponsor_name, actor)
+    if result.updated:
+        invalidate()
+    return result
+
+
 @st.cache_data(ttl=60, show_spinner=False)
 def _labeled_examples(version: int) -> pd.DataFrame:
     return backend().fetch_labeled_examples()

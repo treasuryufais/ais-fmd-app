@@ -343,6 +343,17 @@ class SqliteBackend(Backend):
                 ("locked_by", "TEXT"),
                 ("dues_rates", "TEXT"),
                 ("dues_rates_verified", "INTEGER NOT NULL DEFAULT 0"),
+                # Sponsorship dollar goal for the term. NULL = no goal set yet,
+                # distinct from 0 (a goal of literally $0), same reasoning as
+                # dues_rates being nullable above.
+                ("sponsorship_goal", "REAL"),
+            ],
+            "transactions": [
+                # Who a sponsorship deposit was actually from. Free text: bank
+                # descriptions never carry a company name (just "DEPOSIT
+                # CORPORATE SPONSORSHIP REF12345"), so this has to be typed in
+                # by whoever reconciles the deposit, not parsed from anything.
+                ("sponsor_name", "TEXT"),
             ],
         }
         for table, columns in additions.items():
@@ -447,6 +458,112 @@ class SqliteBackend(Backend):
                     field=term_id,
                     old_value=f"{previous or '(none)'}{'' if was_verified else ' (unconfirmed)'}",
                     new_value=f"{rates or '(none)'}{'' if verified else ' (unconfirmed)'}",
+                )
+                connection.commit()
+                result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def set_term_sponsorship_goal(
+        self, term_id: str, goal: float | None, actor: str
+    ) -> UpdateResult:
+        """
+        Record the sponsorship dollar goal for a term.
+
+        `goal=None` clears it (shows as "no goal set" rather than "$0 goal" --
+        those mean different things to a treasurer). Audited the same way as
+        `set_term_dues_rates`: this is a number a committee will be measured
+        against, so who set it and what it replaced both need to survive.
+        """
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT sponsorship_goal FROM terms WHERE TermID = ?", (term_id,)
+                ).fetchone()
+                if row is None:
+                    result.error = f"Term {term_id} does not exist."
+                    return result
+
+                previous = row["sponsorship_goal"]
+                if (previous is None and goal is None) or (
+                    previous is not None and goal is not None and float(previous) == float(goal)
+                ):
+                    result.unchanged = 1
+                    return result
+
+                connection.execute(
+                    "UPDATE terms SET sponsorship_goal = ? WHERE TermID = ?",
+                    (goal, term_id),
+                )
+                self._audit(
+                    connection,
+                    transaction_id=None,
+                    action="sponsorship_goal",
+                    actor=actor,
+                    field=term_id,
+                    old_value="(none)" if previous is None else f"${previous:,.2f}",
+                    new_value="(none)" if goal is None else f"${goal:,.2f}",
+                )
+                connection.commit()
+                result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def set_transaction_sponsor_name(
+        self, transaction_id: int, sponsor_name: str | None, actor: str
+    ) -> UpdateResult:
+        """
+        Record who a sponsorship transaction was actually from.
+
+        Same M10 period-locking rule as `update_transactions`: a closed
+        term's transactions are read-only, and this is an edit to a
+        transaction like any other, so it is refused the same way rather
+        than quietly bypassing the lock through a side door.
+        """
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT sponsor_name, transaction_date FROM transactions "
+                    "WHERE transactionid = ?",
+                    (transaction_id,),
+                ).fetchone()
+                if row is None:
+                    result.failed.append(transaction_id)
+                    result.error = f"Transaction {transaction_id} does not exist."
+                    return result
+
+                locked = self._locked_ranges(connection)
+                closed = self._locked_term_for(row["transaction_date"], locked)
+                if closed:
+                    result.failed.append(transaction_id)
+                    result.error = (
+                        f"This transaction falls in {closed}, which is closed. "
+                        f"Reopen the term before editing it."
+                    )
+                    return result
+
+                previous = row["sponsor_name"]
+                cleaned = (sponsor_name or "").strip() or None
+                if (previous or None) == cleaned:
+                    result.unchanged = 1
+                    return result
+
+                connection.execute(
+                    "UPDATE transactions SET sponsor_name = ? WHERE transactionid = ?",
+                    (cleaned, transaction_id),
+                )
+                self._audit(
+                    connection,
+                    transaction_id=transaction_id,
+                    action="update",
+                    actor=actor,
+                    field="sponsor_name",
+                    old_value=previous,
+                    new_value=cleaned,
                 )
                 connection.commit()
                 result.updated = 1

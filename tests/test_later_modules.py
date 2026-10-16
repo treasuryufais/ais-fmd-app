@@ -116,6 +116,56 @@ def test_reopening_restores_writability(backend):
     assert backend.insert_transactions(transaction(), "a.csv", ACTOR).ok
 
 
+# --- Sponsor name (M20) -------------------------------------------------------
+
+def test_set_transaction_sponsor_name_writes_and_is_audited(backend):
+    backend.insert_transactions(transaction(), "a.csv", ACTOR)
+    target = int(backend.fetch_transactions().iloc[0]["transactionid"])
+
+    result = backend.set_transaction_sponsor_name(target, "Acme Corp", ACTOR)
+    assert result.updated == 1
+    assert backend.fetch_transactions().iloc[0]["sponsor_name"] == "Acme Corp"
+
+    audit = backend.fetch_audit(50)
+    assert ((audit["transaction_id"] == target) & (audit["field"] == "sponsor_name")).any()
+
+
+def test_set_transaction_sponsor_name_blank_clears_it(backend):
+    backend.insert_transactions(transaction(), "a.csv", ACTOR)
+    target = int(backend.fetch_transactions().iloc[0]["transactionid"])
+    backend.set_transaction_sponsor_name(target, "Acme Corp", ACTOR)
+
+    result = backend.set_transaction_sponsor_name(target, "   ", ACTOR)
+    assert result.updated == 1
+    assert pd.isna(backend.fetch_transactions().iloc[0]["sponsor_name"])
+
+
+def test_set_transaction_sponsor_name_unchanged_is_a_no_op(backend):
+    backend.insert_transactions(transaction(), "a.csv", ACTOR)
+    target = int(backend.fetch_transactions().iloc[0]["transactionid"])
+    backend.set_transaction_sponsor_name(target, "Acme Corp", ACTOR)
+
+    again = backend.set_transaction_sponsor_name(target, "Acme Corp", ACTOR)
+    assert again.updated == 0
+    assert again.unchanged == 1
+
+
+def test_set_transaction_sponsor_name_unknown_transaction_fails(backend):
+    result = backend.set_transaction_sponsor_name(999_999, "Acme Corp", ACTOR)
+    assert result.error and "does not exist" in result.error
+
+
+def test_set_transaction_sponsor_name_refused_in_a_locked_period(backend):
+    backend.insert_transactions(transaction(), "a.csv", ACTOR)
+    target = int(backend.fetch_transactions().iloc[0]["transactionid"])
+    backend.set_term_lock("FA25", True, ACTOR)
+
+    result = backend.set_transaction_sponsor_name(target, "Acme Corp", ACTOR)
+    assert result.failed == [target]
+    assert "closed" in (result.error or "").lower()
+    assert pd.isna(backend.fetch_transactions().iloc[0]["sponsor_name"])
+
+
 # --- Receipts (M9) -----------------------------------------------------------
 
 @pytest.mark.parametrize(

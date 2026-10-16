@@ -27,6 +27,7 @@ from ais_fmd import auth
 from ais_fmd.config.categories import BUDGETED_COMMITTEE_IDS, committee_name
 from ais_fmd.data import repositories as repo
 from ais_fmd.domain import pace
+from ais_fmd.domain import sponsorship as sponsorship_domain
 from ais_fmd.domain.terms import default_semester_index, ordered_semesters
 from ais_fmd.ui import charts, shell, theme
 
@@ -138,6 +139,30 @@ if prior:
         f"{', '.join(recent)} at that day.",
         caption=True,
     )
+
+# --- Sponsorship goal (M20), condensed ---------------------------------------
+#
+# One committee's ledger line, not an org-wide figure like the KPIs above, so
+# it is a caption-plus-bar note rather than a card of its own. The goal-vs-raised
+# history per semester lives on the Treasury page's "Sponsorship history".
+
+sponsorship_summary = sponsorship_domain.summarize(
+    bundle.transactions, bundle.terms, selected_semester
+)
+if sponsorship_summary.goal is None:
+    shell.say(
+        f"Sponsorship raised this term: **${sponsorship_summary.raised:,.2f}** "
+        "— no goal set. Set one on the Treasury page (Terms tab).",
+        caption=True,
+    )
+else:
+    shell.say(
+        f"Sponsorship: **${sponsorship_summary.raised:,.2f}** of "
+        f"${sponsorship_summary.goal:,.2f} goal — "
+        f"**{sponsorship_summary.percent_of_goal:.0f}%**",
+        caption=True,
+    )
+    st.progress(min(sponsorship_summary.percent_of_goal / 100, 1.0))
 
 # --- Committee budgets -------------------------------------------------------
 

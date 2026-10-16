@@ -4,6 +4,7 @@ __pycache__/
 sandbox_data/
 .pytest_cache/
 .streamlit/secrets.toml
+.scratch/
 
 # Anything pulled out of the live database. Holds member names against payment
 # amounts -- never commit it, however convenient it would be.

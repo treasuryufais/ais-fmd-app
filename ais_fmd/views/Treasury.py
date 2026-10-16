@@ -35,11 +35,12 @@ from ais_fmd.config.categories import (
 )
 from ais_fmd.data import repositories as repo
 from ais_fmd.domain import dues
+from ais_fmd.domain import sponsorship
 from ais_fmd.domain.categorize.pipeline import categorize_frame
 from ais_fmd.domain.dedupe import split_new_and_duplicate
 from ais_fmd.domain.parsers import venmo, wells_fargo
 from ais_fmd.domain.terms import ordered_semesters, validate_semester_name
-from ais_fmd.ui import shell
+from ais_fmd.ui import charts, shell
 
 identity = auth.require(auth.Role.TREASURER)
 
@@ -430,6 +431,181 @@ with tab_terms:
                     else:
                         st.success(f"Saved dues rates for {rate_term}.")
                         st.rerun()
+
+    st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
+
+    # --- Per-term sponsorship goal (M20) --------------------------------------
+
+    st.markdown("#### Sponsorship goal for a term")
+    shell.say(
+        "How much sponsorship/donation money the org is aiming to raise this "
+        "term. Set once here; the Dashboard shows how collection is tracking "
+        "against it, the same way it does for dues."
+    )
+
+    if terms.empty:
+        shell.empty_state("No terms yet")
+    else:
+        ordered_for_goal = terms.sort_values("start_date", ascending=False)
+        goal_semester_names = dict(
+            zip(ordered_for_goal["TermID"], ordered_for_goal["Semester"])
+        )
+        with st.form("sponsorship_goal_form"):
+            goal_columns = st.columns([2, 2, 1])
+            with goal_columns[0]:
+                goal_term = st.selectbox(
+                    "Term",
+                    ordered_for_goal["TermID"].tolist(),
+                    format_func=lambda value: f"{value} — {goal_semester_names.get(value, '')}",
+                    key="sponsorship_goal_term",
+                )
+            current_goal_row = ordered_for_goal[ordered_for_goal["TermID"] == goal_term]
+            existing_goal = 0.0
+            goal_already_unset = True
+            if not current_goal_row.empty and "sponsorship_goal" in current_goal_row.columns:
+                raw_goal = current_goal_row.iloc[0].get("sponsorship_goal")
+                if raw_goal is not None and not pd.isna(raw_goal):
+                    existing_goal = float(raw_goal)
+                    goal_already_unset = False
+            with goal_columns[1]:
+                entered_goal = st.number_input(
+                    "Goal ($)",
+                    min_value=0.0,
+                    value=existing_goal,
+                    step=100.0,
+                    format="%.2f",
+                    key="sponsorship_goal_value",
+                )
+            with goal_columns[2]:
+                st.markdown("&nbsp;", unsafe_allow_html=True)
+                clear_goal = st.checkbox(
+                    "No goal", value=goal_already_unset, key="sponsorship_goal_clear"
+                )
+            if st.form_submit_button("Save goal", type="primary"):
+                result = repo.set_term_sponsorship_goal(
+                    goal_term,
+                    None if clear_goal else entered_goal,
+                    identity.email,
+                )
+                if result.error:
+                    shell.error_state("Could not save the sponsorship goal", result.error)
+                elif result.unchanged:
+                    shell.notify("info", f"{goal_term} already had that goal.")
+                else:
+                    st.success(f"Saved sponsorship goal for {goal_term}.")
+                    st.rerun()
+
+    # --- Sponsorship history, all terms at a glance ---------------------------
+
+    st.markdown("##### Sponsorship history")
+    shell.say(
+        "Every term with its goal and how much actually came in -- so a goal "
+        "typo or an old target is easy to spot without switching terms one "
+        "at a time on the Dashboard.",
+        caption=True,
+    )
+
+    if terms.empty:
+        shell.empty_state("No terms yet")
+    else:
+        history_semesters = terms.sort_values("start_date", ascending=False)["Semester"].tolist()
+        history = sponsorship.compare_semesters(
+            repo.load_transactions(), terms, history_semesters
+        )
+
+        history_view = st.radio(
+            "History view",
+            ["Chart", "Table"],
+            horizontal=True,
+            key="sponsorship_history_view",
+            label_visibility="collapsed",
+        )
+
+        if history_view == "Chart":
+            # Chart view stays chart-only, deliberately -- no payment
+            # drill-down here. Oldest-to-newest reads left-to-right, the
+            # opposite order from the table below (which leads with the most
+            # recent term); a trend chart should run chronologically, same
+            # convention as the Dashboard's "Across semesters" chart.
+            shell.chart(
+                charts.sponsorship_trend_bars(history.iloc[::-1]),
+                key="sponsorship_history_chart",
+            )
+        else:
+            display_history = history.copy()
+            display_history["Goal"] = display_history["Goal"].map(
+                lambda value: "—" if pd.isna(value) else f"${value:,.2f}"
+            )
+            display_history["Raised"] = display_history["Raised"].map(
+                lambda value: f"${value:,.2f}"
+            )
+            display_history["% of Goal"] = display_history["% of Goal"].map(
+                lambda value: "—" if pd.isna(value) else f"{value:.0f}%"
+            )
+            shell.dataframe(display_history)
+
+            # --- Drill-down: who actually sponsored, per semester -------------
+            #
+            # The row above answers "how much" -- this answers "from whom",
+            # and lets a treasurer type in the sponsor's name against a
+            # payment (transactions.sponsor_name -- bank text alone never
+            # carries one). Table-view only, per feedback that Chart should
+            # stay compact; only semesters with a payment get an expander,
+            # since a $0 term already says so above and has nothing to
+            # expand into.
+            transactions_bundle = repo.load_transactions()
+            with_payments = history[history["Payments"] > 0]
+            if not with_payments.empty:
+                st.markdown("###### Individual payments")
+                for _, row in with_payments.iterrows():
+                    semester = row["Semester"]
+                    detail = sponsorship.transactions_for_semester(
+                        transactions_bundle, terms, semester
+                    )
+                    original_sponsors = dict(zip(detail["transactionid"], detail["Sponsor"]))
+
+                    with st.expander(f"{semester} — {len(detail)} payment(s)"):
+                        editable_detail = detail.copy()
+                        editable_detail["Date"] = editable_detail["Date"].dt.strftime("%Y-%m-%d")
+                        edited_detail = st.data_editor(
+                            editable_detail,
+                            key=f"sponsor_editor_{semester}",
+                            hide_index=True,
+                            disabled=["transactionid", "Date", "Amount", "Details"],
+                            column_config={
+                                "transactionid": None,  # identity only, not shown
+                                "Amount": st.column_config.NumberColumn(format="$%.2f"),
+                                "Details": st.column_config.TextColumn(width="large"),
+                                "Sponsor": st.column_config.TextColumn(
+                                    "Sponsor", help="Who this payment was actually from."
+                                ),
+                            },
+                        )
+
+                        sponsor_changes = [
+                            (int(edited_row["transactionid"]), edited_row["Sponsor"])
+                            for _, edited_row in edited_detail.iterrows()
+                            if (edited_row["Sponsor"] or None)
+                            != (original_sponsors.get(edited_row["transactionid"]) or None)
+                        ]
+                        if st.button(
+                            f"Save {len(sponsor_changes)} sponsor name"
+                            f"{'s' if len(sponsor_changes) != 1 else ''}",
+                            key=f"save_sponsors_{semester}",
+                            disabled=not sponsor_changes,
+                        ):
+                            errors = []
+                            for transaction_id, sponsor_name in sponsor_changes:
+                                result = repo.set_transaction_sponsor_name(
+                                    transaction_id, sponsor_name, identity.email
+                                )
+                                if result.error:
+                                    errors.append(result.error)
+                            if errors:
+                                shell.error_state("Some sponsor names could not be saved", errors[0])
+                            else:
+                                st.success("Saved.")
+                                st.rerun()
 
     st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 
