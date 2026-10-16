@@ -14,6 +14,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from ais_fmd import nav
 from ais_fmd.domain import assistant, assistant_pages
 from ais_fmd.domain.assistant import Context, Scope, run_tool
 
@@ -186,7 +187,7 @@ def test_leak_check_catches_another_committee_in_a_table():
 # --- Wayfinding -----------------------------------------------------------------
 
 def _nav_entries() -> dict[str, tuple[str, str]]:
-    """{nav label: (view file, role)} from app.py's PAGES literal."""
+    """{nav label: (view file, role)} from app.py's PAGES literal, plus the VP-only pages."""
     tree = ast.parse((ROOT / "app.py").read_text())
     pages = next(n.value for n in tree.body if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "PAGES")
     out = {}
@@ -194,7 +195,36 @@ def _nav_entries() -> dict[str, tuple[str, str]]:
         for entry in section.elts:
             path, title, _icon, role = entry.elts
             out[title.value] = (Path(path.value).name, role.attr.lower())
+    for path, title, _icon, role in nav.VP_PAGES:
+        out.setdefault(title, (Path(path).name, role.name.lower()))
     return out
+
+
+def test_the_assistant_knows_exactly_the_pages_a_vp_can_open():
+    """`assistant_pages` cannot import `nav` (it imports Streamlit), so check they agree."""
+    vp_titles = {title for _path, title, _icon, _role in nav.VP_PAGES}
+    assert assistant_pages.VP_PAGE_NAMES == vp_titles
+    openable = {page.name for page in assistant_pages.PAGES if page.can_open("officer")}
+    assert openable == vp_titles
+
+
+@pytest.mark.parametrize("tool_name, args", [
+    ("committee_spending", {}),
+    ("income_summary", {}),
+    ("largest_transactions", {}),
+    ("dues_summary", {}),
+    ("unpaid_dues", {}),
+    ("find_page", {"topic": "dashboard"}),
+    ("find_page", {"topic": "transactions"}),
+])
+def test_the_assistant_never_points_a_vp_at_a_page_outside_their_menu(frames, tool_name, args):
+    vp_paths = {assistant_pages.by_name(name).path for name in assistant_pages.VP_PAGE_NAMES}
+    answer = run_tool(tool_name, args, ctx(frames, "officer", "Marketing"))
+    if answer.source is not None:
+        assert answer.source in vp_paths, f"{tool_name} sent a VP to {answer.source}"
+    for page in assistant_pages.PAGES:
+        if page.name not in assistant_pages.VP_PAGE_NAMES and page.name not in ("Assistant",):
+            assert f"**{page.path}**" not in answer.text, f"{tool_name} told a VP to open {page.path}"
 
 
 def _hub_tabs(view_file: str) -> dict[str, str]:

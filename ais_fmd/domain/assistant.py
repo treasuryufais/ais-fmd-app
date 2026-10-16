@@ -195,13 +195,24 @@ def _transaction_table(frame: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _verify_page(context: Context, preferred: str, fallback: str = "Dashboard") -> str:
-    """The page to check a figure on: the preferred one if this user can open it."""
-    page = pages.by_name(preferred)
-    if page is not None and page.can_open(context.scope.role):
-        return page.path
-    backup = pages.by_name(fallback)
-    return backup.path if backup is not None else fallback
+# A VP's own version of an org-wide page.
+_VP_EQUIVALENT = {"Transactions": "My Transactions", "Dashboard": "My Committee"}
+
+
+def _verify_page(context: Context, preferred: str, fallback: str = "Dashboard") -> str | None:
+    """
+    The page to check a figure on: the preferred one if this user can open it,
+    else the fallback if they can, else My Committee for a VP, else none -- never
+    a page this user's navigation does not have.
+    """
+    role = context.scope.role
+    if role == "officer":
+        preferred = _VP_EQUIVALENT.get(preferred, preferred)
+    for name in (preferred, fallback, "My Committee"):
+        page = pages.by_name(name)
+        if page is not None and page.can_open(role):
+            return page.path
+    return None
 
 
 def _committee_page(context: Context) -> str:
@@ -562,6 +573,16 @@ def tool_find_page(args: dict, context: Context) -> Answer:
     if best.can_open(role):
         return Answer(text=f"Go to **{best.path}**. It shows {best.shows}.", source=best.path)
 
+    if role == "officer":
+        # Rank is not the reason here: the page shows every committee, so it is
+        # not in a VP's menu. Point to their own committee's version instead.
+        own = pages.by_name(_VP_EQUIVALENT.get(best.name, "My Committee"))
+        return Answer(
+            text=f"That page covers every committee, so it isn't in a VP's menu. "
+                 f"For your committee, go to **{own.path}**. It shows {own.shows}.",
+            source=own.path,
+        )
+
     text = f"That's on **{best.path}**, which only the {best.min_role} can open."
     alternative = next((p for p in matches[1:] if p.can_open(role)), None)
     if alternative is not None:
@@ -820,9 +841,10 @@ def run_tool(name: str, raw_args: dict | None, context: Context) -> Answer:
         )
 
     if tool.access == "names" and not scope.sees_every_committee:
+        dues_page = pages.by_name("Dues")
         return _refuse(
-            f"Only the treasurer can see who hasn't paid dues (it's on {pages.by_name('Roster').path}). "
-            f"You can see dues collected on {pages.by_name('Dues').path}.",
+            "Only the treasurer can see who hasn't paid dues"
+            + (f". You can see dues collected on {dues_page.path}." if dues_page.can_open(scope.role) else "."),
             tool.name, args,
         )
 
