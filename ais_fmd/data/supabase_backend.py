@@ -785,10 +785,11 @@ class SupabaseBackend(Backend):
     #
     # Needs migrations/010_transaction_flags.sql, which has NOT been run against
     # any database. Like the other Supabase methods added for the VP portal, this
-    # has never executed against a real Postgres instance.
+    # has never executed against a real Postgres instance. Reads go through the
+    # secret-key client like every other read since 008_lock_down.sql.
 
     def fetch_flags(self, committee_ids: tuple[int, ...] | None = None) -> pd.DataFrame:
-        query = self._anon.table("transaction_flags").select("*")
+        query = self._admin.table("transaction_flags").select("*")
         if committee_ids is not None:
             ids = [int(committee_id) for committee_id in committee_ids]
             if not ids:
@@ -818,7 +819,7 @@ class SupabaseBackend(Backend):
         allowed = {int(committee_id) for committee_id in allowed_committee_ids}
         try:
             charge = (
-                self._anon.table("transactions")
+                self._admin.table("transactions")
                 .select("budget_category")
                 .eq("transactionid", int(transaction_id))
                 .maybe_single()
@@ -833,7 +834,7 @@ class SupabaseBackend(Backend):
                 return result
 
             existing = (
-                self._anon.table("transaction_flags")
+                self._admin.table("transaction_flags")
                 .select("flag_id")
                 .eq("transaction_id", int(transaction_id))
                 .eq("status", flags_domain.OPEN)
@@ -871,7 +872,7 @@ class SupabaseBackend(Backend):
             return result
         try:
             existing = (
-                self._anon.table("transaction_flags")
+                self._admin.table("transaction_flags")
                 .select("status,transaction_id")
                 .eq("flag_id", int(flag_id))
                 .maybe_single()
