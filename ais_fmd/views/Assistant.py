@@ -1,48 +1,124 @@
 """
 Module M15 -- the assistant.
 
-Runs entirely offline. Questions are answered by real tools computing over the
-data, so the numbers are verifiable and the page costs nothing to use.
+Questions are answered by named, tested tools computing over the data, so every
+number is checkable. Something picks the tool: a language model when one is
+configured (a later change), otherwise the offline keyword router. Either way
+`assistant.run_tool` checks what this user is allowed to see before answering.
 """
 
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
 from ais_fmd import auth, settings
+from ais_fmd.config.categories import committee_name
 from ais_fmd.data import repositories as repo
 from ais_fmd.domain import assistant
-from ais_fmd.domain import budgets as budget_domain
+from ais_fmd.domain import roster as roster_domain
+from ais_fmd.domain.terms import term_id_for_semester
 from ais_fmd.ui import charts, shell, theme
 
-auth.require(auth.Role.MEMBER)
+identity = auth.require(auth.Role.MEMBER)
 
 shell.environment_banner()
 shell.page_header(
     "Assistant",
-    "Ask about the finances. Answers are computed from the data by named tools, "
-    "not generated from a prompt — so every number is checkable.",
+    "Ask about the finances, or where something is in the app. Answers are computed "
+    "from the data by named tools, so every number is checkable.",
 )
 
 bundle = repo.load_bundle()
+
+# --- Who is asking -------------------------------------------------------------
+
+ROLE_NAMES = {
+    auth.Role.MEMBER: "member",
+    auth.Role.OFFICER: "officer",
+    auth.Role.TREASURER: "treasurer",
+    auth.Role.ADMIN: "admin",
+}
+own_committee = committee_name(identity.committee_id) or None
+
+if settings.is_sandbox() and identity.role == auth.Role.OFFICER and own_committee is None:
+    # In production an officer's committee comes from their profile. The sandbox
+    # role switcher has no committee, so pick one here to test the scoping.
+    own_committee = st.selectbox(
+        "Sandbox: answer as the officer of",
+        assistant.COMMITTEE_NAMES,
+        key="assistant_test_committee",
+        help="Sandbox only. Officers only ever get their own committee's figures.",
+    )
+
+scope = assistant.Scope(role=ROLE_NAMES[identity.role], committee=own_committee)
+
+
+def _text(value: object) -> str:
+    """A NULL-safe string. `value or ""` keeps a pandas NaN, which is truthy."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    return str(value)
+
+
+def _members_for(semester: str | None) -> dict[str, list]:
+    """The stored roster for one term, as roster.Member. Treasurers only."""
+    if not semester or not scope.sees_every_committee:
+        return {}
+    term_id = term_id_for_semester(bundle.terms, semester)
+    stored = repo.load_members(term_id) if term_id else pd.DataFrame()
+    members = [
+        roster_domain.Member(
+            full_name=_text(row.get("full_name")),
+            match_key=_text(row.get("match_key")),
+            alt_keys=tuple(p.strip() for p in _text(row.get("alt_keys")).split(",") if p.strip()),
+            preferred_name=_text(row.get("preferred_name")),
+            claims_paid=bool(row.get("claims_paid") or 0),
+        )
+        for row in stored.to_dict("records")
+    ]
+    return {semester: members} if members else {}
+
+
 context = assistant.Context(
     transactions=bundle.transactions,
     budgets=bundle.budgets,
     terms=bundle.terms,
+    scope=scope,
 )
+context.members = _members_for(assistant.current_semester(context))
 
 if bundle.transactions.empty:
     shell.empty_state("No data to ask about yet")
     st.stop()
 
-EXAMPLES = [
-    "What's the total spending for the Marketing committee this semester?",
-    "Which committees are over budget?",
-    "How much income came in via Venmo?",
-    "Show me all transactions over $500",
-    "Compare Fall 2025 and Spring 2026",
-    "Find all uncategorized transactions",
-]
+if scope.role == "officer":
+    EXAMPLES = [
+        "Catch me up on my committee",
+        "How much is left in my budget?",
+        "What did my committee spend this month?",
+        "Show me my committee's latest charges",
+        "How much in dues have we collected this semester?",
+        "Where can I see my committee's budget?",
+    ]
+elif scope.sees_every_committee:
+    EXAMPLES = [
+        "Summarize this semester's finances",
+        "Which committees are over budget?",
+        "How much has Consulting spent this month?",
+        "Who hasn't paid dues yet?",
+        "Show me all transactions over $500",
+        "Where do I upload a bank statement?",
+    ]
+else:
+    EXAMPLES = [
+        "How much of the budget has been spent this semester?",
+        "How much in dues have we collected this semester?",
+        "What was our total income this month?",
+        "Where do I see unpaid dues?",
+        "Where can I find the list of transactions?",
+        "How does this semester compare to last semester?",
+    ]
 
 st.markdown("**Try one of these**")
 example_columns = st.columns(3)
@@ -67,19 +143,25 @@ if question:
     with st.chat_message("user"):
         shell.say(question)
 
-    result = assistant.answer_question(question, context)
+    with st.spinner("Working it out…"):
+        result = assistant.answer_question(question, context)
 
     with st.chat_message("assistant"):
         shell.say(result.text)
-        st.caption(
-            f"Answered by the `{result.tool}` tool"
-            + (f" with {result.arguments}" if result.arguments else "")
-        )
+        provenance = f"Answered by the `{result.tool}` tool"
+        shown_args = {k: v for k, v in result.arguments.items() if k != "topic"}
+        if shown_args:
+            provenance += f" with {shown_args}"
+        if result.source:
+            provenance += f" · Check it on **{result.source}**"
+        shell.say(provenance, caption=True)
 
         if result.table is not None and not result.table.empty:
             shell.dataframe(result.table.head(50))
 
-        if result.chart_hint == "committee_spending" and result.table is not None:
+        if result.status != assistant.ANSWERED:
+            pass
+        elif result.chart_hint == "committee_spending" and result.table is not None:
             if "Committee_Name" in result.table.columns and len(result.table) > 1:
                 shell.chart(
                     charts.ranked_bar(
@@ -136,15 +218,17 @@ produced it. Instead each capability is a **tool** with declared parameters. A
 question selects a tool by score across all of them, the tool computes a real
 answer from the data, and you get numbers, a table and a chart.
 
-It also removes the token problem. The original injected the entire transaction
-table into the prompt; here a model — when one is configured — would only choose
-which tool to call and read back its result.
+When a model is configured it only **chooses** the tool and its details (which
+committee, which dates). It never sees a transaction and never writes the answer:
+the text you read is the tool's output. Who may see what is checked in code after
+the model has chosen, so an officer gets only their own committee's figures however
+the question is phrased. A question no tool covers gets "I don't know".
 """
     )
     shell.dataframe(assistant.tool_catalogue())
 
     if settings.is_sandbox():
         st.caption(
-            "Sandbox mode: no model is contacted. The tools are the whole system, "
+            "Sandbox mode: no model is contacted. The keyword router chooses the tool, "
             "which is why the page works with no API key and no network."
         )
