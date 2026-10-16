@@ -689,7 +689,7 @@ class SupabaseBackend(Backend):
 
     # --- "This isn't ours" flags ---------------------------------------------
     #
-    # Needs migrations/008_transaction_flags.sql, which has NOT been run against
+    # Needs migrations/010_transaction_flags.sql, which has NOT been run against
     # any database. Like the other Supabase methods added for the VP portal, this
     # has never executed against a real Postgres instance.
 

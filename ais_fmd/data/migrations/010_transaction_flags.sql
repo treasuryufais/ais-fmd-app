@@ -1,5 +1,5 @@
 -- ===========================================================================
--- Migration 008 -- "This isn't ours" flags. NOT YET RUN. Treasurer decision.
+-- Migration 010 -- "This isn't ours" flags. NOT YET RUN. Treasurer decision.
 --
 -- Adds the table behind the VP portal's "This isn't ours" button: a VP who thinks
 -- a charge booked to their committee is wrong flags it with a note, and it lands
@@ -12,9 +12,12 @@
 -- Queue hide the feature instead of erroring (the backend reports the table
 -- missing and the pages check before drawing).
 --
--- Like migration 002, this does not enable row-level security: authorization
--- stays application-level (`auth.require`, plus the check inside
--- `create_flag` that a charge is booked to the caller's committee).
+-- Runs after 008_lock_down.sql. That migration turned RLS on for every table
+-- that existed when it ran, so this one does the same for its own table: RLS
+-- on, no policies, nothing granted to anon or authenticated. The app reads and
+-- writes with the secret key, which bypasses RLS. Authorization stays
+-- application-level (`auth.require`, plus the check inside `create_flag` that a
+-- charge is booked to the caller's committee).
 -- ===========================================================================
 
 BEGIN;
@@ -43,5 +46,9 @@ CREATE INDEX IF NOT EXISTS ix_flags_status
 -- the treasurer's queue.
 CREATE UNIQUE INDEX IF NOT EXISTS ux_flags_one_open
     ON public.transaction_flags (transaction_id) WHERE status = 'open';
+
+ALTER TABLE public.transaction_flags ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.transaction_flags FROM anon, authenticated;
+GRANT ALL ON public.transaction_flags TO service_role;
 
 COMMIT;

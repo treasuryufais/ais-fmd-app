@@ -1,5 +1,5 @@
 -- ===========================================================================
--- Migration 009 -- allow the 'president' role in `profiles`. NOT YET RUN.
+-- Migration 011 -- allow the 'president' role in `profiles`. NOT YET RUN.
 --
 -- The President sees everything the Treasurer sees but cannot change anything
 -- (`Role.PRESIDENT` in ais_fmd/auth.py). Migration 002 created `profiles` with a
