@@ -27,9 +27,9 @@ from tests.test_views import ROOT, TIMEOUT, VIEWS, assert_clean, seeded_db, use_
 from tests.test_vp_portal import _committee_rows, membership_db  # noqa: F401
 
 VIEW = "ais_fmd/views/{}.py"
-VP_PAGES = ["Home", "Officer", "MyTransactions", "Assistant"]
+VP_PAGES = ["Officer", "MyTransactions", "Assistant"]
 ORG_WIDE_PAGES = [
-    "Dashboard", "Transactions", "Dues", "Reports", "Reconciliation",
+    "Home", "Dashboard", "Transactions", "Dues", "Reports", "Reconciliation",
     "Runbook", "Treasury", "ReviewQueue", "Roster", "Planner", "DataQuality", "AuditLog",
     # The Pebble hubs, which are what the full navigation actually lists.
     "DuesHub", "TransactionsHub", "AlertsHub", "SettingsHub",

@@ -1,11 +1,11 @@
 """
 Which pages a signed-in person can navigate to.
 
-A VP (an Officer, see `Identity.committee_scoped`) gets four pages: the org-wide
-Home for context, their own committee's dashboard, their own committee's
-transactions, and the Assistant (see the note on `VP_PAGES`). Everything else --
-including pages that are open to any role, like the org-wide Dashboard and
-Transactions -- is left out of their navigation, and Streamlit only serves pages
+A VP (an Officer, see `Identity.committee_scoped`) gets three pages: their own
+committee's dashboard, their own committee's transactions, and the Assistant
+(see the note on `VP_PAGES`). Everything else -- including Home and other pages
+that are open to any role, like the org-wide Dashboard and Transactions, all of
+which show every committee -- is left out of their navigation, and Streamlit only serves pages
 that are in the navigation, so a page that is not listed cannot be reached by
 typing its URL either.
 
@@ -22,10 +22,12 @@ MY_COMMITTEE_PATH = "ais_fmd/views/Officer.py"
 
 # (path, title, icon, minimum role) -- the same shape as `PAGES` in app.py.
 VP_PAGES: list[tuple[str, str, str, Role]] = [
-    ("ais_fmd/views/Home.py", "Home", ":material/home:", Role.MEMBER),
+    # No Home: it shows every committee's budget pace and the bank balance, and the
+    # treasurer's rule is that a VP sees only their own committee (2026-10-16). My
+    # Committee is first, so it is where a VP lands after signing in.
     ("ais_fmd/views/Officer.py", "My Committee", ":material/badge:", Role.OFFICER),
     ("ais_fmd/views/MyTransactions.py", "My Transactions", ":material/table_rows:", Role.OFFICER),
-    # Under My Transactions, as asked. Unlike the three pages above, the Assistant is the
+    # Under My Transactions, as asked. Unlike the two pages above, the Assistant is the
     # shared page, so the scoping is not done here: `assistant.visible_to_asker` gives a
     # VP's tools only their own committee's rows, and `run_tool` refuses questions that
     # name another committee.

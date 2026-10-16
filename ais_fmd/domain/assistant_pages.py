@@ -42,7 +42,16 @@ class PageInfo:
         return " → ".join(steps)
 
     def can_open(self, role: str) -> bool:
+        if role == "officer":
+            # A VP's navigation is `nav.VP_PAGES`, not every page their rank allows:
+            # the member-level pages show every committee and are left out of it.
+            return self.name in VP_PAGE_NAMES
         return ROLE_RANK.get(role, 0) >= ROLE_RANK[self.min_role]
+
+
+# The pages in `nav.VP_PAGES`, by the names below. Kept here as names because
+# `nav` imports Streamlit and `domain/` must not; a test checks the two agree.
+VP_PAGE_NAMES = frozenset({"My Committee", "My Transactions", "Assistant"})
 
 
 PAGES: tuple[PageInfo, ...] = (
@@ -95,6 +104,11 @@ PAGES: tuple[PageInfo, ...] = (
         "My Committee", "My Committee", None, "officer",
         "your committee's budget, spending, remaining, and reimbursements",
         ("my committee", "my budget", "my spending", "committee page", "reimbursement", "how much do i have left"),
+    ),
+    PageInfo(
+        "My Transactions", "My Transactions", None, "officer",
+        "your committee's charges, where you can flag one with \"This isn't ours\"",
+        ("my transactions", "my charges", "flag", "isn't ours", "not ours", "wrong charge", "dispute"),
     ),
     PageInfo(
         "Reconciliation", "Reconciliation", None, "member",
