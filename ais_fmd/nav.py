@@ -26,9 +26,9 @@ VP_PAGES: list[tuple[str, str, str, Role]] = [
     ("ais_fmd/views/Officer.py", "My Committee", ":material/badge:", Role.OFFICER),
     ("ais_fmd/views/MyTransactions.py", "My Transactions", ":material/table_rows:", Role.OFFICER),
     # Under My Transactions, as asked. Unlike the three pages above, the Assistant is the
-    # shared page and is NOT scoped to a committee here: keeping a VP to their own
-    # committee's numbers is the AI Assistant team's job (their goals sheet: "VPs only
-    # see their own committee"). Until that lands it can answer from every committee.
+    # shared page, so the scoping is not done here: `assistant.visible_to_asker` gives a
+    # VP's tools only their own committee's rows, and `run_tool` refuses questions that
+    # name another committee.
     ("ais_fmd/views/Assistant.py", "Assistant", ":material/smart_toy:", Role.MEMBER),
 ]
 
