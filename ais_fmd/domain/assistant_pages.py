@@ -18,7 +18,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-ROLE_RANK = {"member": 10, "officer": 20, "treasurer": 30, "admin": 40}
+# "president" mirrors auth.Role.PRESIDENT (35): sees everything the treasurer
+# sees, between treasurer and admin.
+ROLE_RANK = {"member": 10, "officer": 20, "treasurer": 30, "president": 35, "admin": 40}
 
 
 @dataclass(frozen=True)

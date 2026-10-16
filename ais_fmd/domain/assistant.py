@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import calendar
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import pandas as pd
@@ -397,8 +397,10 @@ def tool_income_summary(args: dict, context: Context) -> Answer:
 
     total = float(income["amount"].sum()) if not income.empty else 0.0
     via = f" via {account}" if account else ""
+    # An officer's context holds only their committee's rows (`visible_to_asker`).
+    whose = f"{context.scope.committee} income" if context.scope.role == "officer" else "Income"
     text = (
-        f"Income{via}{_window_label(args)} totalled **{format_currency(total)}** "
+        f"{whose}{via}{_window_label(args)} totalled **{format_currency(total)}** "
         f"across {_count(len(income), 'transaction')}."
     )
     if not context.scope.sees_every_committee:
@@ -494,6 +496,14 @@ def tool_uncategorized(args: dict, context: Context) -> Answer:
     frame = context.transactions
     pending = frame[frame["budget_category"].isna() | frame["purpose"].isna()]
     review = pages.by_name("Review Queue")
+    if context.scope.role == "officer":
+        # Only this committee's rows are here, so org-wide uncategorized charges
+        # are invisible -- say what the count covers instead of implying none exist.
+        if pending.empty:
+            return Answer(text=f"Every **{context.scope.committee}** charge has a purpose. "
+                               "Charges not yet given a committee are the treasurer's to sort.")
+        return Answer(text=f"**{len(pending):,}** {context.scope.committee} charges have no purpose yet. "
+                           "The treasurer works through these on the Review Queue.")
     if pending.empty:
         return Answer(text="Every transaction has a committee and a purpose.", source=review.path)
     text = (
@@ -752,6 +762,36 @@ def names_other_committee(answer: Answer, scope: Scope) -> bool:
     return any(re.search(rf"(?<![a-z]){re.escape(name.lower())}(?![a-z])", blob) for name in others)
 
 
+def visible_to_asker(context: Context) -> Context:
+    """
+    The context with every row an officer may not see removed, before any tool runs.
+
+    `run_tool` already refuses a question that names another committee, but a
+    tool that sums the whole table -- income, uncategorized, largest
+    transactions -- would still add up other committees' money for a VP. Scoping
+    the data rather than each tool closes that for every tool at once, including
+    ones added later: a tool cannot leak a row it was never given. Rows with no
+    committee (uncategorized, most income) are dropped too, because they are not
+    provably the VP's. An officer with no committee gets an empty context.
+
+    Members are left as they are: they already see org-wide totals on the
+    Dashboard, and `run_tool` keeps committee detail from them.
+    """
+    scope = context.scope
+    if scope.role != "officer":
+        return context
+    transactions = context.transactions
+    budgets = context.budgets
+    if scope.committee is None:
+        transactions = transactions.iloc[0:0]
+        budgets = budgets.iloc[0:0]
+    else:
+        transactions = transactions[transactions["budget_category"].map(committee_name) == scope.committee]
+        if "committeeid" in budgets.columns:
+            budgets = budgets[budgets["committeeid"].map(committee_name) == scope.committee]
+    return replace(context, transactions=transactions, budgets=budgets, members={})
+
+
 def run_tool(name: str, raw_args: dict | None, context: Context) -> Answer:
     """
     The only way an answer is produced. Validates arguments, enforces who may
@@ -769,6 +809,15 @@ def run_tool(name: str, raw_args: dict | None, context: Context) -> Answer:
 
     scope = context.scope
     asked_for = args.get("committee")
+
+    if scope.role == "officer" and scope.committee is None and tool.access != "nav":
+        # `visible_to_asker` gives this officer no rows, so any figure would be a
+        # misleading $0.00. Say why there is nothing instead.
+        return _refuse(
+            "Your account isn't linked to a committee yet, so there are no figures I can show you. "
+            "Ask the treasurer to link it.",
+            tool.name, args,
+        )
 
     if tool.access == "names" and not scope.sees_every_committee:
         return _refuse(
@@ -802,7 +851,7 @@ def run_tool(name: str, raw_args: dict | None, context: Context) -> Answer:
         )
 
     try:
-        answer = tool.run(args, context)
+        answer = tool.run(args, visible_to_asker(context))
     except Exception as exc:  # noqa: BLE001 - surfaced, never silently swallowed
         return Answer(text=f"The **{tool.name}** tool failed: {type(exc).__name__}: {exc}",
                       tool=tool.name, arguments=args, status=UNKNOWN)

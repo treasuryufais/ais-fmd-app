@@ -37,6 +37,7 @@ ROLE_NAMES = {
     auth.Role.MEMBER: "member",
     auth.Role.OFFICER: "officer",
     auth.Role.TREASURER: "treasurer",
+    auth.Role.PRESIDENT: "president",
     auth.Role.ADMIN: "admin",
 }
 own_committee = committee_name(identity.committee_id) or None
