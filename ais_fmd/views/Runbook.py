@@ -191,7 +191,7 @@ Nothing secret is stored in the repository, and the sandbox needs none.
 For production, set as environment variables (never commit them):
 
 - `AIS_FMD_ENV=production` — the *only* value that leaves sandbox mode
-- `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_KEY`
+- `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (the secret key; the publishable key is not used)
 - `OPENAI_API_KEY` — optional; only used for transactions no rule can resolve
 
 If a key is ever exposed, rotate it in the Supabase dashboard first and update

@@ -21,12 +21,14 @@ the existing production app already uses:
 
     [supabase]
     url = "https://<ref>.supabase.co"
-    key = "<anon key>"
+    secret_key = "sb_secret_..."
 
-or from the environment (SUPABASE_URL / SUPABASE_ANON_KEY). Nothing is ever
-printed back: errors quote status codes and table names, never headers. The anon
-key is sufficient and preferred -- do not put the service key here unless a read
-genuinely fails without it.
+or from the environment (SUPABASE_URL / SUPABASE_SERVICE_KEY). Nothing is ever
+printed back: errors quote status codes and table names, never headers. The
+secret key is preferred: once migration 008_lock_down.sql has run, the
+publishable key can read nothing, and RLS answers it with zero rows rather than
+an error -- an export through it would look like an empty database. This
+script only ever issues GETs, so the key's write access is never exercised.
 """
 
 from __future__ import annotations
@@ -87,22 +89,23 @@ def load_credentials() -> tuple[str, str]:
                 data = tomllib.load(handle)
             section = data.get("supabase", {})
             url = str(section.get("url", "")).strip()
-            # Accepts every name the app accepts, newest format first. The
-            # legacy `anon`/`service_role` JWTs were deactivated 2026-09-08
-            # after one reached a public repo, so `publishable_key` is what a
-            # current secrets file actually holds -- but the old names stay
-            # readable so this keeps working against an older project.
+            # Secret key first: after migration 008 the publishable key reads
+            # zero rows (see the module docstring). The publishable names stay
+            # as a fallback for a project the lock-down has not reached yet.
+            # The legacy `anon`/`service_role` JWTs were deactivated 2026-09-08
+            # after one reached a public repo; their names stay readable so
+            # this keeps working against an older project.
             key = _first(
                 section,
-                "publishable_key", "key", "anon_key", "secret_key", "service_key",
+                "secret_key", "service_key", "publishable_key", "key", "anon_key",
             )
             if url and key:
                 return url.rstrip("/"), key
 
     url = os.environ.get("SUPABASE_URL", "").strip()
     key = (
-        os.environ.get("SUPABASE_ANON_KEY", "").strip()
-        or os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
+        os.environ.get("SUPABASE_SERVICE_KEY", "").strip()
+        or os.environ.get("SUPABASE_ANON_KEY", "").strip()
     )
     if url and key:
         return url.rstrip("/"), key
@@ -112,8 +115,8 @@ def load_credentials() -> tuple[str, str]:
         "Create .streamlit/secrets.toml (it is gitignored) containing:\n\n"
         "    [supabase]\n"
         '    url = "https://<your-ref>.supabase.co"\n'
-        '    publishable_key = "sb_publishable_..."\n\n'
-        "or set SUPABASE_URL and SUPABASE_ANON_KEY in the environment.\n"
+        '    secret_key = "sb_secret_..."\n\n'
+        "or set SUPABASE_URL and SUPABASE_SERVICE_KEY in the environment.\n"
         "Do not paste these into a chat or commit them."
     )
 

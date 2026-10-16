@@ -24,11 +24,13 @@ ever opens a Postgres session and `auth.uid()` is always NULL. See the long note
 on `profiles` in migrations/002_deferred_features.sql. Authorization is
 application-level, in `auth.require(...)`, on every page.
 
-What that leaves is worth stating plainly rather than implying otherwise: reads
-go through the anon key and writes through the service key, so the database
-grants no protection of its own. Enabling RLS with no permissive policy -- so
-the service key, which bypasses RLS by design, is the only way in -- is the
-control that would, and it is not applied yet.
+So the database protects itself the only way this architecture allows: every
+read and write goes through the service (secret) key, and migration
+008_lock_down.sql enables RLS with no permissive policy and revokes the RPCs
+from anon/authenticated. The service key bypasses RLS by design, so it is the
+only way in. The publishable key is no longer used -- after 008 it can read
+nothing, and a read through it would silently return zero rows rather than
+fail, which is why no code path is left that could fall back to it.
 """
 
 from __future__ import annotations
@@ -103,35 +105,22 @@ class SupabaseBackend(Backend):
             return ""
 
         self._url = _config("SUPABASE_URL", "url", required=True)
-        self._anon_key = _config(
-            "SUPABASE_ANON_KEY", "publishable_key", "anon_key", "key", required=True
-        )
         self._service_key = _config(
-            "SUPABASE_SERVICE_KEY", "secret_key", "service_key"
+            "SUPABASE_SERVICE_KEY", "secret_key", "service_key", required=True
         )
-        self._anon_client = None
         self._admin_client = None
 
     # --- clients -------------------------------------------------------------
     #
-    # Built once per backend instance and reused. These were previously bare
-    # `@property` methods calling `create_client()` on *every* access, so a page
-    # doing ten reads opened ten HTTP clients and ten TLS handshakes. The
-    # backend object itself is cached per process by `repositories.backend()`,
-    # which is safe precisely because it holds no user identity.
-
-    @property
-    def _anon(self):
-        """Identity-free client. Safe to share; holds no session."""
-        if self._anon_client is None:
-            self._anon_client = self._create_client(self._url, self._anon_key)
-        return self._anon_client
+    # Built once per backend instance and reused. This was previously a bare
+    # `@property` calling `create_client()` on *every* access, so a page doing
+    # ten reads opened ten HTTP clients and ten TLS handshakes. The backend
+    # object itself is cached per process by `repositories.backend()`, which is
+    # safe precisely because it holds no user identity.
 
     @property
     def _admin(self):
         """Service-key client. Bypasses RLS -- server-side only, never exposed."""
-        if not self._service_key:
-            raise RuntimeError("SUPABASE_SERVICE_KEY is not configured.")
         if self._admin_client is None:
             self._admin_client = self._create_client(self._url, self._service_key)
         return self._admin_client
@@ -145,7 +134,7 @@ class SupabaseBackend(Backend):
         The original loop issued one extra request whenever the row count was an
         exact multiple of the page size; stopping on a short page avoids that.
         """
-        client = self._anon
+        client = self._admin
         rows: list[dict] = []
         offset = 0
         while True:
@@ -186,7 +175,7 @@ class SupabaseBackend(Backend):
 
     def fetch_audit(self, limit: int = 500) -> pd.DataFrame:
         response = (
-            self._anon.table("transaction_audit")
+            self._admin.table("transaction_audit")
             .select("*")
             .order("audit_id", desc=True)
             .limit(limit)
@@ -211,7 +200,7 @@ class SupabaseBackend(Backend):
         a chapter's outstanding reimbursements, not a transaction ledger.
         """
         response = (
-            self._anon.table("reimbursements")
+            self._admin.table("reimbursements")
             .select("*")
             .order("submitted_at", desc=True)
             .execute()
@@ -225,7 +214,7 @@ class SupabaseBackend(Backend):
 
     def fetch_receipts(self) -> pd.DataFrame:
         response = (
-            self._anon.table("receipts")
+            self._admin.table("receipts")
             .select("*")
             .order("uploaded_at", desc=True)
             .execute()
@@ -233,7 +222,7 @@ class SupabaseBackend(Backend):
         return pd.DataFrame(response.data or [])
 
     def fetch_members(self, term_id: str | None = None) -> pd.DataFrame:
-        query = self._anon.table("members").select("*")
+        query = self._admin.table("members").select("*")
         if term_id:
             query = query.eq("term_id", term_id).order("full_name")
         else:
@@ -242,7 +231,7 @@ class SupabaseBackend(Backend):
 
     def fetch_profiles(self) -> pd.DataFrame:
         response = (
-            self._anon.table("profiles")
+            self._admin.table("profiles")
             .select("*")
             .order("committee_id")
             .order("display_name")
@@ -262,7 +251,7 @@ class SupabaseBackend(Backend):
         if not email:
             return None
         response = (
-            self._anon.table("profiles")
+            self._admin.table("profiles")
             .select("*")
             .ilike("email", email)
             .maybe_single()
@@ -350,7 +339,7 @@ class SupabaseBackend(Backend):
             return result
         try:
             existing = (
-                self._anon.table("reimbursements")
+                self._admin.table("reimbursements")
                 .select("status")
                 .eq("request_id", request_id)
                 .maybe_single()
@@ -448,7 +437,7 @@ class SupabaseBackend(Backend):
         result = UpdateResult()
         try:
             existing = (
-                self._anon.table("terms")
+                self._admin.table("terms")
                 .select("Semester,locked")
                 .eq("TermID", term_id)
                 .maybe_single()
@@ -483,7 +472,7 @@ class SupabaseBackend(Backend):
         result = UpdateResult()
         try:
             existing = (
-                self._anon.table("terms")
+                self._admin.table("terms")
                 .select("dues_rates,dues_rates_verified")
                 .eq("TermID", term_id)
                 .maybe_single()
@@ -618,7 +607,7 @@ class SupabaseBackend(Backend):
             return result
         try:
             existing = (
-                self._anon.table("members")
+                self._admin.table("members")
                 .select("alt_keys")
                 .eq("term_id", term_id)
                 .eq("match_key", match_key)
