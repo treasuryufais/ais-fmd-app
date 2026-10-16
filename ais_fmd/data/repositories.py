@@ -338,6 +338,7 @@ def set_term_dues_rates(
     return result
 
 
+@_blocked_when_read_only(_update_refusal)
 def set_term_sponsorship_goal(
     term_id: str, goal: float | None, actor: str
 ) -> UpdateResult:
@@ -348,6 +349,7 @@ def set_term_sponsorship_goal(
     return result
 
 
+@_blocked_when_read_only(_update_refusal)
 def set_transaction_sponsor_name(
     transaction_id: int, sponsor_name: str | None, actor: str
 ) -> UpdateResult:
