@@ -31,10 +31,12 @@ from ais_fmd.domain import dues
 from ais_fmd.domain.categorize.pipeline import categorize_records
 from ais_fmd.domain.categorize.scoring import CardRegistry, current_era
 from ais_fmd.ui import charts, shell
+from ais_fmd.ui import flags as flag_ui
 
 identity = auth.require(auth.Role.TREASURER)
 
 shell.environment_banner()
+auth.read_only_notice(identity)
 shell.page_header(
     "Review Queue",
     "Work through what the categorizer could not resolve. A purchase on a card "
@@ -47,6 +49,10 @@ transactions = repo.load_transactions()
 if transactions.empty:
     shell.empty_state("No transactions yet", "Upload a statement from the Treasury page.")
     st.stop()
+
+# Charges a VP has disputed ("This isn't ours"). One call; the panel lives in
+# ui/flags.py so this shared page stays untouched otherwise.
+flag_ui.treasurer_panel(transactions, identity.email)
 
 pending = transactions[
     transactions["budget_category"].isna() | transactions["purpose"].isna()
@@ -352,7 +358,7 @@ with st.form("review_queue_form"):
         )
         st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 
-    submitted = st.form_submit_button("Apply decisions", type="primary")
+    submitted = st.form_submit_button("Apply decisions", type="primary", disabled=identity.read_only)
 
 if submitted:
     changes: list[TransactionChange] = []

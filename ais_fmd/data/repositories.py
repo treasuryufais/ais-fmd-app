@@ -16,11 +16,13 @@ that changed for everyone, without nuking unrelated caches.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 
 import pandas as pd
 import streamlit as st
 
+from .. import auth
 from .backend import Backend, TransactionChange, UpdateResult, UploadReceipt, get_backend
 
 
@@ -174,7 +176,50 @@ def load_bundle() -> DataBundle:
 
 
 # --- Writes (each invalidates) -----------------------------------------------
+#
+# Every write below is wrapped so a read-only identity (the President) is refused
+# here, whatever the page does. Pages also hide their edit controls, but this is
+# the one place that cannot be forgotten. No identity in the session (a script or
+# test calling the repository directly) is not blocked: every page checks the role
+# before it renders, so a signed-in write always has one.
 
+READ_ONLY_MESSAGE = "You have read-only access, so nothing was changed."
+
+
+def _is_read_only() -> bool:
+    try:
+        identity = st.session_state.get(auth.SESSION_KEY)
+    except Exception:  # noqa: BLE001 - no session at all (a plain script)
+        return False
+    return bool(getattr(identity, "read_only", False))
+
+
+def _update_refusal() -> UpdateResult:
+    return UpdateResult(error=READ_ONLY_MESSAGE)
+
+
+def _upload_refusal() -> UploadReceipt:
+    return UploadReceipt(error=READ_ONLY_MESSAGE)
+
+
+def _receipt_refusal() -> tuple[int | None, UpdateResult]:
+    return None, UpdateResult(error=READ_ONLY_MESSAGE)
+
+
+def _blocked_when_read_only(refusal):
+    def decorate(write):
+        @functools.wraps(write)
+        def guarded(*args, **kwargs):
+            if _is_read_only():
+                return refusal()
+            return write(*args, **kwargs)
+
+        return guarded
+
+    return decorate
+
+
+@_blocked_when_read_only(_upload_refusal)
 def insert_transactions(records: list[dict], file_name: str, actor: str) -> UploadReceipt:
     receipt = backend().insert_transactions(records, file_name, actor)
     if receipt.ok:
@@ -182,6 +227,7 @@ def insert_transactions(records: list[dict], file_name: str, actor: str) -> Uplo
     return receipt
 
 
+@_blocked_when_read_only(_update_refusal)
 def update_transactions(changes: list[TransactionChange], actor: str) -> UpdateResult:
     result = backend().update_transactions(changes, actor)
     if result.updated:
@@ -189,6 +235,7 @@ def update_transactions(changes: list[TransactionChange], actor: str) -> UpdateR
     return result
 
 
+@_blocked_when_read_only(_update_refusal)
 def upsert_budgets(term_id: str, allocations: dict[int, float], actor: str) -> UpdateResult:
     result = backend().upsert_budgets(term_id, allocations, actor)
     if result.updated:
@@ -196,6 +243,7 @@ def upsert_budgets(term_id: str, allocations: dict[int, float], actor: str) -> U
     return result
 
 
+@_blocked_when_read_only(_update_refusal)
 def insert_term(term_id: str, semester: str, start_date: str, end_date: str, actor: str) -> UpdateResult:
     result = backend().insert_term(term_id, semester, start_date, end_date, actor)
     if result.updated:
@@ -203,6 +251,7 @@ def insert_term(term_id: str, semester: str, start_date: str, end_date: str, act
     return result
 
 
+@_blocked_when_read_only(_update_refusal)
 def upsert_merchants(rules: list[dict], actor: str) -> UpdateResult:
     result = backend().upsert_merchants(rules, actor)
     if result.updated:
@@ -210,6 +259,7 @@ def upsert_merchants(rules: list[dict], actor: str) -> UpdateResult:
     return result
 
 
+@_blocked_when_read_only(_update_refusal)
 def record_statement_balance(balance: dict, actor: str) -> UpdateResult:
     result = backend().record_statement_balance(balance, actor)
     if result.updated:
@@ -237,6 +287,7 @@ def load_receipts() -> pd.DataFrame:
     return _receipts(data_version())
 
 
+@_blocked_when_read_only(_update_refusal)
 def create_reimbursement(request: dict, actor: str) -> UpdateResult:
     result = backend().create_reimbursement(request, actor)
     if result.updated:
@@ -244,6 +295,7 @@ def create_reimbursement(request: dict, actor: str) -> UpdateResult:
     return result
 
 
+@_blocked_when_read_only(_update_refusal)
 def decide_reimbursement(request_id: int, status: str, actor: str, note: str = "") -> UpdateResult:
     result = backend().decide_reimbursement(request_id, status, actor, note)
     if result.updated:
@@ -251,6 +303,7 @@ def decide_reimbursement(request_id: int, status: str, actor: str, note: str = "
     return result
 
 
+@_blocked_when_read_only(_update_refusal)
 def link_reimbursement(request_id: int, transaction_id: int, actor: str) -> UpdateResult:
     result = backend().link_reimbursement_to_transaction(request_id, transaction_id, actor)
     if result.updated:
@@ -258,6 +311,7 @@ def link_reimbursement(request_id: int, transaction_id: int, actor: str) -> Upda
     return result
 
 
+@_blocked_when_read_only(_receipt_refusal)
 def store_receipt(receipt: dict, actor: str) -> tuple[int | None, UpdateResult]:
     receipt_id, result = backend().store_receipt(receipt, actor)
     if result.updated:
@@ -265,6 +319,7 @@ def store_receipt(receipt: dict, actor: str) -> tuple[int | None, UpdateResult]:
     return receipt_id, result
 
 
+@_blocked_when_read_only(_update_refusal)
 def set_term_lock(term_id: str, locked: bool, actor: str) -> UpdateResult:
     result = backend().set_term_lock(term_id, locked, actor)
     if result.updated:
@@ -272,6 +327,7 @@ def set_term_lock(term_id: str, locked: bool, actor: str) -> UpdateResult:
     return result
 
 
+@_blocked_when_read_only(_update_refusal)
 def set_term_dues_rates(
     term_id: str, rates: str, verified: bool, actor: str
 ) -> UpdateResult:
@@ -292,6 +348,7 @@ def load_labeled_examples() -> pd.DataFrame:
     return _labeled_examples(data_version())
 
 
+@_blocked_when_read_only(_update_refusal)
 def record_labels(examples: list[dict], actor: str) -> UpdateResult:
     result = backend().insert_labeled_examples(examples, actor)
     if result.updated:
@@ -371,6 +428,97 @@ def run_quality_checks():
 def reconcile_all():
     """`domain.reconcile.reconcile_all` over the current data, memoized until the next write."""
     return _cached_reconciliation(data_version())
+
+
+# --- "This isn't ours" flags --------------------------------------------------
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _flags(version: int, committee_ids: tuple[int, ...] | None) -> pd.DataFrame:
+    return backend().fetch_flags(committee_ids)
+
+
+def load_flags(committee_ids: tuple[int, ...] | None = None) -> pd.DataFrame:
+    """
+    Flags, open first. Pass a VP's `committee_ids` to get only flags on charges
+    booked to their lines; `None` is every flag, for the treasurer.
+
+    Raises if the backend cannot answer (for example the table has not been
+    created yet); callers check before drawing the feature rather than assuming.
+    """
+    scope = None if committee_ids is None else tuple(int(i) for i in committee_ids)
+    return _flags(data_version(), scope)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _flags_moved_into(version: int, committee_ids: tuple[int, ...]) -> pd.DataFrame:
+    return backend().fetch_flags_moved_into(committee_ids)
+
+
+def load_flags_moved_into(committee_ids: tuple[int, ...]) -> pd.DataFrame:
+    """
+    Charges moved into these budget lines after another committee flagged them.
+    Only the charge comes back, never who flagged it or where it came from (see
+    `Backend.fetch_flags_moved_into`).
+    """
+    return _flags_moved_into(data_version(), tuple(int(i) for i in committee_ids))
+
+
+@_blocked_when_read_only(_update_refusal)
+def create_flag(
+    transaction_id: int, allowed_committee_ids: tuple[int, ...], note: str, actor: str
+) -> UpdateResult:
+    result = backend().create_flag(transaction_id, allowed_committee_ids, note, actor)
+    if result.updated:
+        invalidate()
+    return result
+
+
+@_blocked_when_read_only(_update_refusal)
+def resolve_flag(flag_id: int, status: str, actor: str, note: str = "") -> UpdateResult:
+    result = backend().resolve_flag(flag_id, status, actor, note)
+    if result.updated:
+        invalidate()
+    return result
+
+
+@_blocked_when_read_only(_update_refusal)
+def move_flagged_charge(
+    flag_id: int, new_committee_id: int, actor: str, note: str = ""
+) -> UpdateResult:
+    """The treasurer's "not theirs" verdict: move the charge and close the flag."""
+    result = backend().move_flagged_charge(flag_id, new_committee_id, actor, note)
+    if result.updated:
+        invalidate()  # every committee's totals changed, not just the flag list
+    return result
+
+
+# --- Roster and access list ---------------------------------------------------
+# Pages used to call these on `backend()` directly, which skipped the read-only
+# check above. Going through here keeps that check in one place. They do not
+# invalidate; their pages call `invalidate()` themselves, as before.
+
+@_blocked_when_read_only(_update_refusal)
+def replace_members(
+    term_id: str, members: list[dict], source_file: str, actor: str
+) -> UpdateResult:
+    return backend().replace_members(term_id, members, source_file, actor)
+
+
+@_blocked_when_read_only(_update_refusal)
+def add_member_alias(term_id: str, match_key: str, alias_key: str, actor: str) -> UpdateResult:
+    return backend().add_member_alias(term_id, match_key, alias_key, actor)
+
+
+@_blocked_when_read_only(_update_refusal)
+def upsert_profile(
+    email: str, role: str, committee_id: int | None, display_name: str, actor: str
+) -> UpdateResult:
+    return backend().upsert_profile(email, role, committee_id, display_name, actor)
+
+
+@_blocked_when_read_only(_update_refusal)
+def remove_profile(email: str) -> UpdateResult:
+    return backend().remove_profile(email)
 
 
 def locked_semesters() -> set[str]:

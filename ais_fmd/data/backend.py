@@ -19,6 +19,21 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from .. import settings
+from ..config.categories import COMMITTEE_BY_ID, committee_name
+
+
+def normalize_email(value: object) -> str:
+    """
+    The one spelling of an email that profiles are stored and looked up by.
+
+    Google's token capitalises an address however the account was first typed, so
+    lookups must ignore case. Doing that by storing lowercase and comparing for
+    equality -- rather than with `ILIKE` -- matters: in a LIKE pattern `_` and
+    `%` are wildcards, and `_` is common in real addresses, so `a_b@x.edu` would
+    also match `a.b@x.edu`. For a lookup that decides who gets in as which
+    committee, "matches a different person's row" is the failure to rule out.
+    """
+    return str(value or "").strip().lower()
 
 
 @dataclass
@@ -203,6 +218,160 @@ class Backend(ABC):
 
     def remove_profile(self, email: str) -> UpdateResult:
         return self._unsupported("VP portal access")
+
+    # --- "This isn't ours" flags ---------------------------------------------
+    #
+    # A VP disputing a charge booked to their committee. A flag is a note to the
+    # treasurer; it never changes the booking.
+
+    def fetch_flags(self, committee_ids: tuple[int, ...] | None = None) -> pd.DataFrame:
+        """All flags, or with `committee_ids` only those on charges booked to them."""
+        return pd.DataFrame()
+
+    def fetch_flags_moved_into(self, committee_ids: tuple[int, ...]) -> pd.DataFrame:
+        """
+        Charges the treasurer moved INTO these budget lines because another
+        committee flagged them -- so the receiving VP is told, and the charge
+        does not just appear in their totals unexplained.
+
+        Written once here, on top of two methods every backend already has, so
+        SQLite and Supabase both get it.
+
+        What comes back is deliberately only the charge (date, amount, details,
+        purpose) and when it was decided. Not who flagged it, not their note, not
+        the treasurer's reply (which names the committee it came from), and not
+        the line it was moved out of: those belong to another committee, and the
+        caller here is one VP, so they are dropped in this layer rather than
+        trusting a page to hide them.
+        """
+        columns = [
+            "flag_id", "transaction_id", "resolved_at",
+            "transaction_date", "amount", "details", "purpose",
+        ]
+        empty = pd.DataFrame(columns=columns)
+        ids = {int(committee_id) for committee_id in committee_ids}
+        if not ids:
+            return empty
+
+        flags = self.fetch_flags(None)
+        if flags is None or flags.empty:
+            return empty
+        decided = flags[
+            (flags["status"] == "resolved") & ~flags["booked_to_committee_id"].isin(ids)
+        ]
+        if decided.empty:
+            return empty
+
+        charges = self.fetch_transactions()
+        if charges is None or charges.empty:
+            return empty
+        here = charges[charges["budget_category"].isin(ids)][
+            ["transactionid", "transaction_date", "amount", "details", "purpose"]
+        ]
+        moved = decided.merge(here, left_on="transaction_id", right_on="transactionid", how="inner")
+        if moved.empty:
+            return empty
+        moved = moved.sort_values("resolved_at", ascending=False).drop_duplicates("transaction_id")
+        return moved[columns].reset_index(drop=True)
+
+    def create_flag(
+        self,
+        transaction_id: int,
+        allowed_committee_ids: tuple[int, ...],
+        note: str,
+        actor: str,
+    ) -> UpdateResult:
+        """
+        `allowed_committee_ids` is every budget line the caller owns; the backend
+        refuses a charge booked anywhere else.
+        """
+        return self._unsupported("Flagging a charge")
+
+    def resolve_flag(self, flag_id: int, status: str, actor: str, note: str = "") -> UpdateResult:
+        return self._unsupported("Resolving a flag")
+
+    def move_flagged_charge(
+        self, flag_id: int, new_committee_id: int, actor: str, note: str = ""
+    ) -> UpdateResult:
+        """
+        The treasurer's verdict "this isn't theirs": move the charge to
+        `new_committee_id` and close the flag as resolved, as one decision.
+
+        Written once here, on top of methods every backend already implements, so
+        SQLite and Supabase both get it -- and with it the closed-period check and
+        the audit trail of `update_transactions`, which the move goes *through*
+        rather than around.
+
+        The order is deliberate. The charge is moved first and the flag closed
+        second, so the only way to fail halfway is "moved but the flag is still
+        open" (which the treasurer can simply close) -- never "flag closed but the
+        charge never moved". If the move is refused, the flag stays open.
+
+        Refuses, leaving everything as it was, when the flag is not open, the
+        destination is unknown or the same, or the charge has been moved since it
+        was flagged (the treasurer should then just close the flag).
+        """
+        result = UpdateResult()
+
+        flags = self.fetch_flags(None)
+        match = flags[flags["flag_id"] == int(flag_id)] if not flags.empty else flags
+        if match.empty:
+            result.error = f"Flag {flag_id} does not exist."
+            return result
+        flag = match.iloc[0]
+        if flag["status"] != "open":
+            result.unchanged = 1
+            return result
+
+        if int(new_committee_id) not in COMMITTEE_BY_ID:
+            result.error = f"Committee {new_committee_id} does not exist."
+            return result
+
+        charges = self.fetch_transactions()
+        charge = charges[charges["transactionid"] == int(flag["transaction_id"])]
+        if charge.empty:
+            result.error = f"Charge {flag['transaction_id']} does not exist."
+            return result
+        charge = charge.iloc[0]
+
+        booked_now = None if pd.isna(charge["budget_category"]) else int(charge["budget_category"])
+        flagged_from = None if pd.isna(flag["booked_to_committee_id"]) else int(flag["booked_to_committee_id"])
+        if booked_now != flagged_from:
+            result.error = (
+                "This charge has changed since it was flagged: it is now booked to "
+                f"{committee_name(booked_now) or 'no committee'}. Close the flag instead of moving it."
+            )
+            return result
+        if booked_now == int(new_committee_id):
+            result.error = f"It is already booked to {committee_name(booked_now)}."
+            return result
+
+        # `update_transactions` writes the purpose too, so pass the current one or
+        # it would be blanked.
+        purpose = None if pd.isna(charge["purpose"]) else str(charge["purpose"])
+        moved = self.update_transactions(
+            [
+                TransactionChange(
+                    transaction_id=int(flag["transaction_id"]),
+                    purpose=purpose,
+                    budget_category=int(new_committee_id),
+                )
+            ],
+            actor,
+        )
+        if moved.error or moved.failed:
+            result.error = moved.error or "The charge could not be moved."
+            return result  # nothing changed, so the flag stays open
+
+        summary = f"Moved from {committee_name(booked_now)} to {committee_name(int(new_committee_id))}."
+        closing = self.resolve_flag(int(flag_id), "resolved", actor, f"{summary} {note}".strip())
+        result.updated = 1  # the charge did move
+        if closing.error:
+            result.error = (
+                f"The charge was moved, but the flag could not be closed ({closing.error}). "
+                "Close it by hand."
+            )
+        return result
 
 
 def get_backend() -> Backend:

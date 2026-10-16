@@ -35,6 +35,9 @@ class Role(IntEnum):
     MEMBER = 10
     OFFICER = 20
     TREASURER = 30
+    # Ranked above Treasurer so `can(TREASURER)` is true: the President sees every
+    # page the Treasurer does. What they cannot do is write -- see `Identity.read_only`.
+    PRESIDENT = 35
     ADMIN = 40
 
     @property
@@ -43,6 +46,7 @@ class Role(IntEnum):
             Role.MEMBER: "Member",
             Role.OFFICER: "Committee officer",
             Role.TREASURER: "Treasurer",
+            Role.PRESIDENT: "President",
             Role.ADMIN: "Admin",
         }[self]
 
@@ -51,6 +55,7 @@ ROLE_DESCRIPTIONS = {
     Role.MEMBER: "Read-only dashboards and reports.",
     Role.OFFICER: "Adds their own committee's detail and reimbursement requests.",
     Role.TREASURER: "Uploads statements, edits transactions, sets budgets.",
+    Role.PRESIDENT: "Sees everything the Treasurer sees, but cannot change anything.",
     Role.ADMIN: "Everything, plus data-quality and audit tooling.",
 }
 
@@ -65,6 +70,34 @@ class Identity:
 
     def can(self, required: Role) -> bool:
         return self.role >= required
+
+    @property
+    def read_only(self) -> bool:
+        """
+        True for the President: every page opens, nothing can be changed.
+
+        Pages show or hide their edit controls with `can_write`, and the write
+        functions in `data/repositories.py` refuse a read-only identity
+        themselves, so a page that forgets to check still cannot change data.
+        """
+        return self.role == Role.PRESIDENT
+
+    @property
+    def can_write(self) -> bool:
+        """Whether this identity may change transactions, budgets, terms or the roster."""
+        return self.role >= Role.TREASURER and not self.read_only
+
+    @property
+    def committee_scoped(self) -> bool:
+        """
+        True for a VP: an Officer who is not also a Treasurer or Admin.
+
+        A scoped identity gets its own short navigation (`nav.VP_PAGES`) instead
+        of the full one, because most pages are open to any role at or above
+        MEMBER and show every committee's data -- ranking an Officer above
+        MEMBER would otherwise hand a VP the whole ledger.
+        """
+        return self.role == Role.OFFICER
 
 
 def _default_identity() -> Identity:
@@ -162,7 +195,22 @@ def login_gate() -> None:
     denied_google_email: str | None = None
     if _google_auth_configured():
         if getattr(st.user, "is_logged_in", False):
-            identity = _identity_for_google_user(dict(st.user))
+            lookup_failed = False
+            try:
+                identity = _identity_for_google_user(dict(st.user))
+            except Exception:  # noqa: BLE001 - fail closed, whatever went wrong
+                # The access list could not be read at all -- most likely the
+                # `profiles` table has not been created yet. Refuse, say what
+                # actually happened (not "you are not on the list", which would
+                # send a VP to the treasurer for the wrong reason), and leave the
+                # treasury password form below working. An unhandled error here
+                # would show a signed-in VP a stack trace instead.
+                identity = None
+                lookup_failed = True
+                st.warning(
+                    "Signed in with Google, but access could not be checked right "
+                    "now. Try again shortly, or ask the treasurer."
+                )
             if identity is not None:
                 st.session_state[SESSION_KEY] = identity
                 st.rerun()
@@ -170,7 +218,8 @@ def login_gate() -> None:
             # silently downgraded. Falls through to the password form below
             # rather than stopping here, so a treasurer whose own email is
             # mistyped in `profiles` still has a way in.
-            denied_google_email = str(st.user.get("email") or "unknown address")
+            if not lookup_failed:
+                denied_google_email = str(st.user.get("email") or "unknown address")
         else:
             st.caption("VP access")
             if st.button("Sign in with Google", type="primary", key="google_login_button"):
@@ -236,6 +285,7 @@ _ROLE_BY_NAME: dict[str, Role] = {
     "member": Role.MEMBER,
     "officer": Role.OFFICER,
     "treasurer": Role.TREASURER,
+    "president": Role.PRESIDENT,
     "admin": Role.ADMIN,
 }
 
@@ -285,6 +335,12 @@ def _identity_for_google_user(
     email = str(user_info.get("email") or "").strip()
     if not email:
         return None
+    # Google puts `email_verified` in the identity token. An address the provider
+    # has not verified proves nothing about who is typing it, so it cannot be
+    # matched against an access list. Absent is treated as fine (a plain dict in
+    # a test, or a provider that omits it); explicitly false is refused.
+    if user_info.get("email_verified") is False:
+        return None
     profile = fetch_profile(email)
     if profile is None:
         return None
@@ -331,6 +387,66 @@ def require(required: Role) -> Identity:
     raise AssertionError("unreachable")  # pragma: no cover
 
 
+def refuse_read_only(identity: Identity) -> None:
+    """
+    Turn a read-only identity away from a page that exists only to change things.
+
+    Called straight after `require(...)`, which every page must do first.
+    """
+    if not identity.read_only:
+        return
+
+    st.warning(
+        f"**Read-only access.** You are signed in as **{identity.role.label}**. "
+        "This page only changes settings, so there is nothing here to view."
+    )
+    st.stop()
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def read_only_notice(identity: Identity) -> None:
+    """A one-line banner for pages a read-only identity can open but not change."""
+    if identity.read_only:
+        st.info("You are signed in as President: this page is read-only for you.", icon=":material/lock:")
+
+
+_DEMO_NONE = "—"
+
+
+def _demo_profile_emails() -> list[str]:
+    """The fake profiles in the sandbox's access list, for the demo sign-in picker."""
+    try:
+        from .data import repositories as repo
+
+        frame = repo.load_profiles()
+    except Exception:  # noqa: BLE001 - a sandbox with no profiles simply has no demo sign-in
+        return []
+    if frame is None or frame.empty or "email" not in frame.columns:
+        return []
+    return sorted(str(email) for email in frame["email"])
+
+
+def _apply_demo_profile() -> None:
+    """
+    Sign in as the chosen fake profile, via the same lookup Google sign-in uses.
+
+    A callback, so it runs before the page reruns. It also sets the role and
+    committee pickers to match: otherwise their remembered values would be read
+    next and quietly put the identity back to whatever was chosen before.
+    """
+    email = st.session_state.get("ais_demo_profile")
+    st.session_state["ais_demo_profile"] = _DEMO_NONE  # back to the prompt; the identity stays
+    if not email or email == _DEMO_NONE:
+        return
+    identity = _identity_for_google_user({"email": email, "email_verified": True})
+    if identity is None:
+        return
+    set_identity(identity)
+    st.session_state["ais_role_picker"] = identity.role
+    if identity.committee_id is not None:
+        st.session_state["ais_committee_picker"] = identity.committee_id
+
+
 def role_switcher() -> None:
     """
     Sandbox-only control for exercising the gating.
@@ -343,6 +459,21 @@ def role_switcher() -> None:
 
     identity = current_user()
     st.sidebar.markdown("### Signed in as")
+
+    demo_emails = _demo_profile_emails()
+    if demo_emails:
+        st.sidebar.selectbox(
+            "Demo sign-in",
+            [_DEMO_NONE] + demo_emails,
+            key="ais_demo_profile",
+            on_change=_apply_demo_profile,
+            help=(
+                "Sandbox only. Signs in as one of the fake profiles, through the same "
+                "lookup Google sign-in will use, so you see exactly what that person would."
+            ),
+        )
+    st.sidebar.caption(identity.email)
+
     options = list(Role)
     chosen = st.sidebar.selectbox(
         "Role",
@@ -352,8 +483,30 @@ def role_switcher() -> None:
         key="ais_role_picker",
         help="Sandbox only. In production this comes from the authenticated session.",
     )
-    if chosen != identity.role:
-        set_identity(Identity(email=identity.email, role=chosen, committee_id=identity.committee_id))
+    # A VP always belongs to a committee, so testing as one needs a committee
+    # to be chosen too. Without this an Officer would have committee_id None.
+    committee_id = identity.committee_id
+    if chosen == Role.OFFICER:
+        from .config.categories import BUDGETED_COMMITTEE_IDS, committee_name
+
+        options_ids = list(BUDGETED_COMMITTEE_IDS)
+        current = committee_id if committee_id in options_ids else options_ids[0]
+        committee_id = st.sidebar.selectbox(
+            "Committee",
+            options_ids,
+            index=options_ids.index(current),
+            format_func=committee_name,
+            key="ais_committee_picker",
+            help="Sandbox only. In production this comes from the VP's profile.",
+        )
+    elif chosen == Role.PRESIDENT:
+        # The President's own budget line; their profile carries it in production.
+        from .config.vp_committees import PRESIDENT_LINE_ID
+
+        committee_id = PRESIDENT_LINE_ID
+
+    if chosen != identity.role or committee_id != identity.committee_id:
+        set_identity(Identity(email=identity.email, role=chosen, committee_id=committee_id))
         st.rerun()
 
     st.sidebar.caption(ROLE_DESCRIPTIONS[chosen])

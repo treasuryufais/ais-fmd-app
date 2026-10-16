@@ -44,6 +44,7 @@ from ais_fmd.ui import shell
 identity = auth.require(auth.Role.TREASURER)
 
 shell.environment_banner()
+auth.read_only_notice(identity)
 shell.page_header(
     "Treasury",
     "Upload statements, allocate budgets, and manage academic terms.",
@@ -234,7 +235,8 @@ with tab_upload:
                     )
 
                     if st.button(
-                        f"Import {len(dedupe.new)} transaction(s)", type="primary", key="confirm_import"
+                        f"Import {len(dedupe.new)} transaction(s)", type="primary", key="confirm_import",
+                        disabled=identity.read_only,
                     ):
                         final = []
                         for position, record in enumerate(dedupe.new):
@@ -318,7 +320,7 @@ with tab_budgets:
                         format="%.2f",
                         key=f"budget_{selected_term}_{committee_id}",
                     )
-            saved = st.form_submit_button("Save budgets", type="primary")
+            saved = st.form_submit_button("Save budgets", type="primary", disabled=identity.read_only)
 
         if saved:
             result = repo.upsert_budgets(selected_term, inputs, identity.email)
@@ -407,7 +409,7 @@ with tab_terms:
                 confirmed = st.checkbox(
                     "Confirmed", value=already_confirmed, key="dues_rate_confirmed"
                 )
-            if st.form_submit_button("Save rates", type="primary"):
+            if st.form_submit_button("Save rates", type="primary", disabled=identity.read_only):
                 parsed = dues.parse_rates(entered)
                 if entered.strip() and not parsed:
                     shell.error_state(
@@ -472,7 +474,7 @@ with tab_terms:
         with lock_columns[2]:
             st.markdown("&nbsp;", unsafe_allow_html=True)
             action = "Reopen term" if currently_locked else "Close term"
-            if st.button(action, key="toggle_lock", type="primary"):
+            if st.button(action, key="toggle_lock", type="primary", disabled=identity.read_only):
                 result = repo.set_term_lock(lock_target, not currently_locked, identity.email)
                 if result.error:
                     shell.error_state("Could not change the term", result.error)
@@ -494,7 +496,7 @@ with tab_terms:
         with columns[1]:
             start_date = st.date_input("Start date")
             end_date = st.date_input("End date")
-        add_clicked = st.form_submit_button("Add term", type="primary")
+        add_clicked = st.form_submit_button("Add term", type="primary", disabled=identity.read_only)
 
     if add_clicked:
         valid, message = validate_semester_name(semester)

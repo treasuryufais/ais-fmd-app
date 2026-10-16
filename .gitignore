@@ -29,3 +29,11 @@ secrets.toml
 
 # Per-person Claude Code settings (local permissions, file paths).
 .claude/settings.local.json
+
+# Private exports (financial history, member databases). They hold names against
+# payment amounts. Keep them OUT of this folder; these rules are the safety net
+# for the day one lands here by accident.
+*.xlsx
+*.xls
+*.xlsm
+*private_test*

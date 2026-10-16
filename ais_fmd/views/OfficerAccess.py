@@ -11,6 +11,7 @@ from ais_fmd.data import repositories as repo
 from ais_fmd.ui import shell
 
 identity = auth.require(auth.Role.TREASURER)
+auth.refuse_read_only(identity)
 
 shell.environment_banner()
 shell.page_header(
@@ -29,11 +30,12 @@ if not auth.google_login_available():
         "needs (a Google Cloud OAuth app, and the `[auth]` section in secrets).",
     )
 
-ROLE_OPTIONS = ["member", "officer", "treasurer", "admin"]
+ROLE_OPTIONS = ["member", "officer", "treasurer", "president", "admin"]
 ROLE_HELP = {
     "member": "Read-only dashboards.",
     "officer": "Adds their own committee's detail and reimbursement requests.",
     "treasurer": "Full write access — uploads, categorisation, budgets.",
+    "president": "Sees everything the treasurer sees; cannot change anything.",
     "admin": "Everything, including this page.",
 }
 
@@ -56,6 +58,10 @@ with st.expander("Add or update someone", expanded=True):
         cleaned_email = email.strip()
         if not cleaned_email or "@" not in cleaned_email:
             shell.error_state("Not saved", "Enter a valid email address.")
+        elif role == "officer" and committee_choice == "— none —":
+            # An officer is defined by their committee. Saving one without it would
+            # let them sign in and then see nothing, which looks like a bug.
+            shell.error_state("Not saved", "An officer needs a committee. Pick one.")
         else:
             committee_id = (
                 None
@@ -64,7 +70,7 @@ with st.expander("Add or update someone", expanded=True):
                     c for c in BUDGETED_COMMITTEE_IDS if committee_label(c) == committee_choice
                 )
             )
-            result = repo.backend().upsert_profile(
+            result = repo.upsert_profile(
                 cleaned_email, role, committee_id, display_name.strip(), identity.email
             )
             if result.ok:
@@ -109,7 +115,7 @@ target = remove_cols[0].selectbox(
     "Email to remove", [""] + list(profiles["email"]), label_visibility="collapsed"
 )
 if remove_cols[1].button("Remove", disabled=not target):
-    result = repo.backend().remove_profile(target)
+    result = repo.remove_profile(target)
     if result.ok:
         repo.invalidate()
         shell.notify("success", f"Removed {target}.")

@@ -27,6 +27,7 @@ identity = auth.require(auth.Role.MEMBER)
 is_treasurer = identity.can(auth.Role.TREASURER)
 
 shell.environment_banner()
+auth.read_only_notice(identity)
 shell.page_header(
     "Reimbursements",
     "Submit what you spent with a receipt. Approved requests match themselves "
@@ -79,7 +80,7 @@ with rendered[0]:
             type=[extension.lstrip(".") for extension in sorted(receipts_domain.ALLOWED_EXTENSIONS)],
             help=f"Image or PDF, up to {receipts_domain.MAX_BYTES // 1_048_576} MB.",
         )
-        submitted = st.form_submit_button("Submit request", type="primary")
+        submitted = st.form_submit_button("Submit request", type="primary", disabled=identity.read_only)
 
     if submitted:
         committee_id = parse_committee_label(committee_label)
@@ -200,7 +201,7 @@ if is_treasurer:
                             "Note", key=f"note_{request_id}", label_visibility="collapsed",
                             placeholder="Optional note",
                         )
-                        if st.button("Approve", key=f"approve_{request_id}", type="primary"):
+                        if st.button("Approve", key=f"approve_{request_id}", type="primary", disabled=identity.read_only):
                             result = repo.decide_reimbursement(
                                 request_id, reimb.APPROVED, identity.email, note
                             )
@@ -208,7 +209,7 @@ if is_treasurer:
                                 shell.error_state("Could not approve", result.error)
                             else:
                                 st.rerun()
-                        if st.button("Reject", key=f"reject_{request_id}"):
+                        if st.button("Reject", key=f"reject_{request_id}", disabled=identity.read_only):
                             result = repo.decide_reimbursement(
                                 request_id, reimb.REJECTED, identity.email, note
                             )
@@ -259,7 +260,7 @@ if is_treasurer:
                 for c in candidates
             }
             chosen = st.selectbox("Confirm a match", list(options), key="match_choice")
-            if st.button("Link and mark paid", type="primary"):
+            if st.button("Link and mark paid", type="primary", disabled=identity.read_only):
                 candidate = options[chosen]
                 result = repo.link_reimbursement(
                     candidate.request_id, candidate.transaction_id, identity.email
@@ -313,7 +314,7 @@ if is_treasurer:
                 type=[e.lstrip(".") for e in sorted(receipts_domain.ALLOWED_EXTENSIONS)],
                 key="attach_receipt",
             )
-            if st.button("Attach receipt", disabled=attach_file is None):
+            if st.button("Attach receipt", disabled=attach_file is None or identity.read_only):
                 data = attach_file.getvalue()
                 stored = receipts_domain.store(attach_file.name, data, attach_file.type)
                 if not stored.ok:

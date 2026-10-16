@@ -1,9 +1,15 @@
 """
 Module M11 -- committee officer portal.
 
-A scoped view for a committee chair: their budget, their spend, their remaining,
-and a way to raise a reimbursement — without seeing or being able to change
-anything belonging to another committee.
+A VP's version of the org-wide Dashboard: the same four questions -- how am I
+doing against budget, where did the money go, how does this term compare with
+past ones, and am I on pace -- answered for one committee, and only that one.
+
+A committee can own several budget lines (Membership owns Membership and
+Passport), so every figure here is about all of them together; `config/
+vp_committees.py` says which lines belong. The committee comes from the signed-in
+profile, never from a widget a VP could change, and the page only ever reads rows
+booked to that committee's lines.
 
 This is the page that depends on FINDING F2 being fixed. Under the original
 shared-password model there was no way to give a chair sight of their own budget
@@ -12,24 +18,37 @@ without handing them the keys to everything.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pandas as pd
 import streamlit as st
 
-from ais_fmd import auth
+from ais_fmd import auth, settings
+from ais_fmd.config import vp_committees
 from ais_fmd.config.categories import BUDGETED_COMMITTEE_IDS, committee_name
 from ais_fmd.data import repositories as repo
 from ais_fmd.domain import budgets as budget_domain
+from ais_fmd.domain import committee_report, exports, vp_history
 from ais_fmd.domain import reimbursements as reimb
-from ais_fmd.domain.money import format_currency, safe_percent
-from ais_fmd.domain.terms import attach_semester, default_semester_index, ordered_semesters
-from ais_fmd.ui import charts, shell, theme
+from ais_fmd.domain import vp_metrics
+from ais_fmd.domain.money import format_currency
+from ais_fmd.domain.terms import (
+    attach_semester,
+    date_range_for_semester,
+    default_semester_index,
+    ordered_semesters,
+    previous_semester,
+)
+from ais_fmd.ui import charts, committee_charts, shell, theme
+from ais_fmd.ui import flags as flag_ui
 
 identity = auth.require(auth.Role.OFFICER)
 
 shell.environment_banner()
 shell.page_header(
     "My Committee",
-    "Your budget, your spending, and your outstanding reimbursements.",
+    "Your budget, where the money went, and how this term compares — for your "
+    "committee only.",
 )
 
 bundle = repo.load_bundle()
@@ -44,7 +63,17 @@ if not semesters:
 # In production the committee comes from the signed-in profile. A treasurer or
 # admin can look at any committee; an officer sees only their own.
 
-can_choose = identity.can(auth.Role.TREASURER) or identity.committee_id is None
+can_choose = identity.can(auth.Role.TREASURER)
+
+# An officer whose profile has no committee sees nothing rather than a picker:
+# a picker would let them open any committee, which is the one thing this page
+# exists to prevent.
+if not can_choose and identity.committee_id is None:
+    shell.empty_state(
+        "No committee assigned to your account",
+        " Ask the treasurer to add your email under Officer Access.",
+    )
+    st.stop()
 
 controls = st.columns([2, 2])
 with controls[0]:
@@ -55,14 +84,19 @@ with controls[0]:
             if identity.committee_id in BUDGETED_COMMITTEE_IDS
             else 0
         )
-        chosen_name = st.selectbox("Committee", committee_names, index=default_index)
+        picked_name = st.selectbox("Committee", committee_names, index=default_index)
         committee_id = next(
-            cid for cid in BUDGETED_COMMITTEE_IDS if committee_name(cid) == chosen_name
+            cid for cid in BUDGETED_COMMITTEE_IDS if committee_name(cid) == picked_name
         )
     else:
         committee_id = identity.committee_id
-        chosen_name = committee_name(committee_id)
-        st.markdown(f"**Committee**  \n{chosen_name}")
+        st.markdown(f"**Committee**  \n{vp_committees.title_for(committee_id)}")
+
+# A committee can own several budget lines. Everything below is about all of them
+# together; an unmapped committee is just its own single line.
+line_ids = vp_committees.budget_ids_for(committee_id)
+line_names = [committee_name(cid) for cid in line_ids]
+chosen_name = vp_committees.title_for(committee_id)
 
 with controls[1]:
     semester = st.selectbox(
@@ -77,82 +111,292 @@ if not can_choose:
         "You are seeing only your own committee. Treasurers can view any committee."
     )
 
-# --- Position ----------------------------------------------------------------
+# How current the figures are, so a VP knows whether last week's charges are in.
+uploaded_files = repo.load_uploaded_files()
+freshness = vp_metrics.data_freshness(bundle.transactions, uploaded_files)
+freshness_note = vp_metrics.freshness_text(bundle.transactions, uploaded_files)
+st.caption(freshness_note)
+
+# --- Scope: this committee's rows only, before anything is computed ----------
+
+transactions = bundle.transactions
+mine = (
+    transactions
+    if transactions.empty
+    else transactions[transactions["budget_category"].isin(line_ids)]
+)
+scoped = attach_semester(mine, bundle.terms)
+scoped = scoped[scoped["Semester"] == semester]
 
 summary = budget_domain.budget_vs_actual(
-    bundle.transactions, bundle.budgets, bundle.terms, semester
+    transactions, bundle.budgets, bundle.terms, semester
 )
-row = summary[summary["Committee_Name"] == chosen_name]
+lines = summary[summary["Committee_Name"].isin(line_names)]
 
-if row.empty:
+if lines.empty:
     shell.empty_state(
         f"No budget or spending recorded for {chosen_name} in {semester}",
         "Ask the treasurer to set an allocation for this term.",
     )
     st.stop()
 
-position = row.iloc[0]
-percent = safe_percent(position["Spent"], position["Budget"])
+# --- Headline ----------------------------------------------------------------
 
-metrics = st.columns(4)
-metrics[0].metric("Budget", format_currency(position["Budget"]))
-metrics[1].metric("Spent", format_currency(position["Spent"]))
-metrics[2].metric("Remaining", format_currency(position["Remaining"]))
-metrics[3].metric("Used", "—" if percent is None else f"{percent:.0f}%")
+position = vp_metrics.rollup(summary, line_names)
+percent = position["percent"]
+status = vp_metrics.status_for(percent, position["spent"])
+
+prior = previous_semester(bundle.terms, semester)
+prior_totals = (
+    budget_domain.semester_totals(mine, bundle.terms, prior)
+    if prior
+    else {"income": 0.0, "expenses": 0.0, "net": 0.0, "count": 0}
+)
+trend = budget_domain.semester_totals_by_semester(mine, bundle.terms, semesters)
+spend_trend = [trend[name]["expenses"] for name in semesters]
+
+shell.metric_row(
+    [
+        {"label": "Budget", "value": position["budget"]},
+        {
+            "label": "Spent",
+            "value": position["spent"],
+            "delta": position["spent"] - prior_totals["expenses"],
+            "inverse": True,
+            "trend": spend_trend,
+            "color": theme.active().expense,
+        },
+        {"label": "Remaining", "value": position["remaining"]},
+        {
+            "label": "Used",
+            "value": "—" if percent is None else f"{percent:.0f}%",
+            "currency": False,
+        },
+    ]
+)
 
 status_style = {"over": "over", "approaching": "approaching", "on track": "on track"}
 st.markdown(
-    shell.pill(position["Status"], status_style.get(position["Status"], "muted")),
+    shell.pill(status, status_style.get(status, "muted")),
     unsafe_allow_html=True,
 )
 if percent is not None:
     st.progress(min(percent / 100, 1.0))
 
-if position["Status"] == "over":
+# Pace: money used against the share of the term that has passed. Spending 60% of
+# a budget means something different in week 3 than in week 12.
+elapsed = vp_metrics.term_elapsed_percent(bundle.terms, semester)
+pace = vp_metrics.pace_sentence(position, elapsed, semester)
+if pace:
+    shell.say(pace, caption=True)
+
+if prior:
+    st.caption(f"Spending change compares against {prior}.")
+
+if status == "over":
     shell.notify(
         "warning",
         f"{chosen_name} is over its allocation by "
-        f"{format_currency(abs(position['Remaining']))}. Speak to the treasurer "
+        f"{format_currency(abs(position['remaining']))}. Speak to the treasurer "
         f"before committing anything further.",
     )
 
-# --- Spending ----------------------------------------------------------------
+# A printable one-page report for this committee and term. Built by a function
+# that does its own scoping, so what is in the file cannot depend on this page.
+report_html = committee_report.build_for_committee(
+    transactions,
+    bundle.budgets,
+    bundle.terms,
+    committee_id,
+    semester,
+    generated=datetime.now(),
+    data_note=freshness_note,
+    sandbox=settings.is_sandbox(),
+)
+st.download_button(
+    "Download committee report",
+    report_html,
+    file_name=f"{exports.slug(chosen_name)}_{exports.slug(semester)}_report.html",
+    mime="text/html",
+    key="download_committee_report",
+    help="A one-page report for this committee and term. Opens in any browser and prints to PDF.",
+)
 
 st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
-st.markdown("#### Your spending this term")
 
-scoped = attach_semester(bundle.transactions, bundle.terms)
-scoped = scoped[(scoped["Semester"] == semester) & (scoped["budget_category"] == committee_id)]
+# --- Updates on flagged charges ----------------------------------------------
+#
+# What happened to charges this committee flagged, and any charge the treasurer
+# moved INTO it. Directly under the budget numbers, which is where a moved
+# charge shows up. Nothing draws when there is nothing to say.
 
-if scoped.empty:
-    shell.empty_state("Nothing recorded against this committee yet")
+flag_ui.updates_panel(
+    flag_ui.load_flags_or_none(line_ids),
+    flag_ui.load_arrivals_or_none(line_ids),
+    bundle.transactions,
+    line_ids,
+)
+
+# --- Where the money went ----------------------------------------------------
+#
+# Sits directly under the headline numbers: the first question after "how much is
+# left" is "where did it go". The older per-line bullet chart and the by-purpose
+# bars were dropped from this page; the waterfall already shows the biggest
+# kinds of spending against the budget.
+
+st.subheader("Where the money went")
+
+expense_split = budget_domain.categorize_flow(scoped, budget_domain.EXPENSE)
+income_split = budget_domain.categorize_flow(scoped, budget_domain.INCOME)
+
+if expense_split.empty:
+    shell.empty_state("Nothing spent yet", f"No charges are booked to {chosen_name} in {semester}.")
 else:
-    table_column, chart_column = st.columns([3, 2])
-    with table_column:
-        display = scoped.sort_values("transaction_date", ascending=False)
-        shell.dataframe(
-            pd.DataFrame(
-                {
-                    "Date": pd.to_datetime(display["transaction_date"]).dt.date,
-                    "Amount": display["amount"],
-                    "Purpose": display["purpose"].fillna("—"),
-                    "Details": display["details"].astype(str).str.slice(0, 70),
-                }
-            ),
-            column_config={"Amount": st.column_config.NumberColumn(format="$%.2f")},
-            height=360,
+    labels, values, measures = vp_metrics.budget_flow(expense_split, position["budget"])
+    shell.chart(
+        charts.waterfall(labels, values, measures, title=f"{semester} budget flow"),
+        key="committee_flow",
+    )
+    shell.say(
+        "Your budget, less your five biggest kinds of spending; everything else is "
+        "grouped as Other. What is left is your remaining balance.",
+        caption=True,
+    )
+
+# A committee that owns several budget lines keeps a per-line breakdown. None do
+# today, so this is invisible until one does.
+if len(line_names) > 1:
+    by_line = lines.rename(columns={"Committee_Name": "Budget line"})
+    by_line["% Spent"] = by_line["% Spent"].map(
+        lambda value: "—" if value is None or value != value else f"{value:.1f}%"
+    )
+    shell.dataframe(
+        by_line[["Budget line", "Budget", "Spent", "% Spent", "Status"]],
+        column_config={
+            "Budget": st.column_config.NumberColumn(format="$%.2f"),
+            "Spent": st.column_config.NumberColumn(format="$%.2f"),
+            "% Spent": st.column_config.TextColumn(width="small"),
+            "Status": st.column_config.TextColumn(width="small"),
+        },
+    )
+
+if not income_split.empty:
+    st.markdown("#### Money received")
+    shell.chart(
+        charts.ranked_bar(
+            income_split,
+            label_column="Category",
+            value_column="Amount",
+            color=theme.active().income,
+        ),
+        key="committee_income_split",
+    )
+
+st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
+
+# --- Spending pace -----------------------------------------------------------
+
+st.subheader("Spending pace")
+
+term_window = date_range_for_semester(bundle.terms, semester)
+if term_window is None:
+    shell.empty_state("No term dates on record", f"{semester} has no start and end dates set.")
+else:
+    term_start, term_end = term_window
+    spend_so_far = vp_metrics.cumulative_spend(scoped, term_start, term_end, freshness["through"])
+    shell.chart(
+        committee_charts.pace_chart(
+            spend_so_far,
+            position["budget"],
+            term_start,
+            term_end,
+            today=pd.Timestamp.today().normalize(),
+        ),
+        key="committee_pace",
+    )
+    shell.say(
+        "The solid line is what you have spent. The dashed line is where an even "
+        "spend across the term would be, so being above it means ahead of pace.",
+        caption=True,
+    )
+
+# Where this committee stood at the same point in earlier terms: the other half of
+# "is 95% spent unusual?". Shown only when there is something meaningful to say.
+past_terms = vp_history.same_point_in_past_terms(
+    transactions,
+    bundle.budgets,
+    bundle.terms,
+    line_ids,
+    semester,
+    through=freshness["through"],
+    today=pd.Timestamp.today().normalize(),
+)
+if past_terms is not None:
+    st.markdown("**Compared with the same point in past terms**")
+    shell.say(vp_history.comparison_sentence(past_terms) or "")
+    shell.dataframe(
+        vp_history.display_frame(past_terms),
+        column_config={
+            "Spent by this point": st.column_config.NumberColumn(format="$%.2f"),
+            "Of its budget": st.column_config.NumberColumn(format="%.0f%%"),
+        },
+    )
+    st.caption(
+        f"\"Same point\" means {past_terms.elapsed_percent:.0f}% of the way through each "
+        f"term, as of {past_terms.as_of:%b} {past_terms.as_of.day} (the earlier of today "
+        "and the latest charge on record). Each term is measured against its own budget."
+    )
+
+st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
+
+# --- Trend and burn rate -----------------------------------------------------
+
+st.subheader("Across semesters")
+
+# Projected burn is shown for some committees only (see `vp_committees`). Everyone
+# else gets the semester chart at full width.
+show_burn = vp_committees.shows_projected_burn(line_ids)
+if show_burn:
+    trend_column, burn_column = st.columns([3, 2])
+else:
+    trend_column, burn_column = st.container(), None
+
+with trend_column:
+    history = vp_metrics.historical(mine, bundle.budgets, bundle.terms, line_names)
+    shell.chart(charts.trend_bars(history), key="committee_trend")
+
+if burn_column is not None:
+    with burn_column:
+        st.markdown("**Projected burn**")
+        burn = budget_domain.burn_rate_projection(
+            transactions, bundle.budgets, bundle.terms, semester
         )
-    with chart_column:
-        by_purpose = budget_domain.categorize_flow(scoped, budget_domain.EXPENSE)
-        shell.chart(
-            charts.ranked_bar(
-                by_purpose,
-                label_column="Category",
-                value_column="Amount",
-                color=theme.active().expense,
-            ),
-            key="officer_purposes",
-        )
+        burn = burn[burn["Committee_Name"].isin(line_names)]
+        at_risk = burn[
+            burn["Note"].isin({"Projected to exhaust before term end", "Already over budget"})
+        ]
+        if at_risk.empty:
+            shell.empty_state(
+                "Nothing projected to overrun",
+                "You finish within budget at the current pace.",
+            )
+        else:
+            compact = at_risk.copy()
+            compact["Risk"] = compact["Note"].map(
+                lambda note: "Over budget" if note == "Already over budget" else "Will exhaust"
+            )
+            shell.dataframe(
+                compact[["Committee_Name", "Daily Burn", "Projected Exhaustion", "Risk"]].rename(
+                    columns={"Committee_Name": "Budget line", "Daily Burn": "Per day"}
+                ),
+                column_config={
+                    "Per day": st.column_config.NumberColumn(format="$%.2f"),
+                    "Projected Exhaustion": st.column_config.DateColumn(format="MMM D, YYYY"),
+                    "Risk": st.column_config.TextColumn(width="small"),
+                },
+            )
+
+st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 
 # --- Reimbursements ----------------------------------------------------------
 #
@@ -190,11 +434,11 @@ if requests.empty:
         "Submit one from the Reimbursements page — it will be pre-assigned to this committee.",
     )
 else:
-    mine = requests[requests["committee_id"] == committee_id]
-    if mine.empty:
+    mine_requests = requests[requests["committee_id"].isin(line_ids)]
+    if mine_requests.empty:
         shell.empty_state("No requests for this committee yet")
     else:
-        outstanding = mine[mine["status"].isin([reimb.PENDING, reimb.APPROVED])]
+        outstanding = mine_requests[mine_requests["status"].isin([reimb.PENDING, reimb.APPROVED])]
         if not outstanding.empty:
             shell.say(
                 f"{len(outstanding)} outstanding, totalling "
@@ -203,7 +447,7 @@ else:
                 caption=True,
             )
         shell.dataframe(
-            reimb.display_frame(mine),
+            reimb.display_frame(mine_requests),
             column_config={
                 "Amount": st.column_config.NumberColumn(format="$%.2f"),
                 "Submitted": st.column_config.DatetimeColumn(format="MMM D, YYYY"),

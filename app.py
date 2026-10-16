@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from ais_fmd import auth, settings
+from ais_fmd import auth, nav, settings
 from ais_fmd.ui import shell
 
 shell.bootstrap()
@@ -93,15 +93,16 @@ PAGES = {
 
 identity = auth.current_user()
 
+# A VP sees a short, committee-scoped navigation instead of the full list; see
+# `ais_fmd/nav.py` for why hiding pages is what actually keeps other committees'
+# data out of their reach.
 pages = {
     section: [
         st.Page(path, title=title, icon=icon, default=(title == "Home"))
         for path, title, icon, required in entries
-        if identity.can(required)
     ]
-    for section, entries in PAGES.items()
+    for section, entries in nav.visible_pages(identity, PAGES).items()
 }
-pages = {section: entries for section, entries in pages.items() if entries}
 
 navigation = st.navigation(pages, position="top")
 

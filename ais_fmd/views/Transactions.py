@@ -30,9 +30,10 @@ from ais_fmd.domain.terms import attach_semester, ordered_semesters
 from ais_fmd.ui import shell
 
 identity = auth.require(auth.Role.MEMBER)
-can_edit = identity.can(auth.Role.TREASURER)
+can_edit = identity.can_write
 
 shell.environment_banner()
+auth.read_only_notice(identity)
 shell.page_header(
     "Transactions",
     "Search, filter and correct categorisation. Changes are staged locally and "

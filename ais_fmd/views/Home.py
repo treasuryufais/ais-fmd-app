@@ -17,7 +17,7 @@ from datetime import datetime
 
 import streamlit as st
 
-from ais_fmd import auth
+from ais_fmd import auth, nav
 from ais_fmd.data import repositories as repo
 from ais_fmd.domain import alerts as alert_domain
 from ais_fmd.domain import dues as dues_domain
@@ -34,6 +34,15 @@ _HUB_KEYS = {
 }
 
 identity = auth.current_user()
+
+# A VP's navigation is a short list (see `ais_fmd/nav.py`); a button that jumps to a
+# page outside it would raise, so those buttons are simply not drawn for them.
+_OPENABLE = {page[0] for page in nav.VP_PAGES} if identity.committee_scoped else None
+
+
+def _can_open(page: str) -> bool:
+    return _OPENABLE is None or page in _OPENABLE
+
 
 shell.environment_banner()
 
@@ -138,7 +147,7 @@ with main:
         committees = pace.committee_pace(bundle.transactions, bundle.budgets, bundle.terms, clock)
         shell.heading("Committees to watch")
         shell.chart(charts.committee_pace(committees, clock, rows=3), key="home_watch")
-        if not committees.empty and st.button(
+        if not committees.empty and _can_open("ais_fmd/views/Dashboard.py") and st.button(
             f"All {len(committees)} committees", key="home_all_committees", icon=":material/arrow_forward:"
         ):
             st.switch_page("ais_fmd/views/Dashboard.py")
@@ -170,7 +179,9 @@ with side:
         )
         shell.chart(charts.dues_curve(curve, prior_curve, clock, prior_label=prior), key="home_dues")
         shell.say(f"{format_currency(collected)} collected this term.", caption=True)
-        if st.button("Open Dues", key="home_open_dues", icon=":material/arrow_forward:"):
+        if _can_open("ais_fmd/views/DuesHub.py") and st.button(
+            "Open Dues", key="home_open_dues", icon=":material/arrow_forward:"
+        ):
             st.switch_page("ais_fmd/views/DuesHub.py")
 
     # --- Needs you -----------------------------------------------------------
@@ -195,6 +206,8 @@ with side:
                 alert.severity, ":material/info:"
             )
             items.append((alert.title, alert.detail, icon, *target))
+        # Pages a VP cannot open are not offered; their alerts are not theirs to work.
+        items = [item for item in items if _can_open(item[3])]
         if identity.can(auth.Role.TREASURER):
             for issue in repo.run_quality_checks():
                 if issue.severity in {"critical", "high", "medium"}:

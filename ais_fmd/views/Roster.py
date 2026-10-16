@@ -20,6 +20,7 @@ from ais_fmd.ui import shell
 identity = auth.require(auth.Role.TREASURER)
 
 shell.environment_banner()
+auth.read_only_notice(identity)
 shell.page_header(
     "Roster & dues reconciliation",
     "Upload the membership list, then compare it against who has actually paid. "
@@ -96,10 +97,10 @@ with st.expander("Upload a membership list", expanded=False):
                     "not in this file is treated as having left.",
                     caption=True,
                 )
-                if st.button(f"Save roster for {selected}", type="primary"):
+                if st.button(f"Save roster for {selected}", type="primary", disabled=identity.read_only):
                     # `save_result`, not `result`: see the note on `alias_result`
                     # below. `result` is the page's reconciliation object.
-                    save_result = repo.backend().replace_members(
+                    save_result = repo.replace_members(
                         term_id,
                         [
                             {
@@ -265,13 +266,13 @@ with suggested_tab:
             cols[1].markdown(format_currency(payment.amount))
             cols[2].markdown(payment.payer_name)
             cols[3].markdown(f"*{roster_domain.extract_memo(payment.details) or '—'}*")
-            if cols[4].button("Confirm", key=f"confirm_{member.match_key}_{payment.index}"):
+            if cols[4].button("Confirm", key=f"confirm_{member.match_key}_{payment.index}", disabled=identity.read_only):
                 # Deliberately NOT `result`: that name holds the page's
                 # reconciliation object, which every tab below still reads. On
                 # the failure path this function returns and the script carries
                 # on, so rebinding it turned a failed alias save into an
                 # AttributeError two tabs later.
-                alias_result = repo.backend().add_member_alias(
+                alias_result = repo.add_member_alias(
                     term_id, member.match_key, alias, identity.email
                 )
                 if alias_result.ok:

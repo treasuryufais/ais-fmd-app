@@ -127,7 +127,7 @@ CREATE TABLE IF NOT EXISTS public.profiles (
     user_id    uuid PRIMARY KEY REFERENCES auth.users (id) ON DELETE CASCADE,
     email      text,
     role       text NOT NULL DEFAULT 'member'
-        CHECK (role IN ('member', 'officer', 'treasurer', 'admin')),
+        CHECK (role IN ('member', 'officer', 'treasurer', 'president', 'admin')),
     committee_id integer REFERENCES public.committees ("CommitteeID"),
     created_at timestamptz DEFAULT now()
 );
@@ -139,6 +139,7 @@ AS $$
     SELECT COALESCE(
         (SELECT CASE role
                     WHEN 'admin'     THEN 40
+                    WHEN 'president' THEN 35
                     WHEN 'treasurer' THEN 30
                     WHEN 'officer'   THEN 20
                     ELSE 10

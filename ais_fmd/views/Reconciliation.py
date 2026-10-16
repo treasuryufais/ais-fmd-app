@@ -18,9 +18,10 @@ from ais_fmd.domain.money import format_currency
 from ais_fmd.ui import shell
 
 identity = auth.require(auth.Role.MEMBER)
-can_edit = identity.can(auth.Role.TREASURER)
+can_edit = identity.can_write
 
 shell.environment_banner()
+auth.read_only_notice(identity)
 shell.page_header(
     "Reconciliation",
     "Prove that opening balance plus the period's transactions equals the closing "
