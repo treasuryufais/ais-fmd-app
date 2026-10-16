@@ -1,8 +1,10 @@
-# >=1.49: the views pass width="stretch" to st.dataframe/st.plotly_chart. On
-# 1.44 that raises TypeError at render time, so every view test fails while the
-# domain suite stays green -- which looks like a broken app rather than a
-# too-old dependency. The floor is the API, not a preference.
-streamlit>=1.49
+# >=1.66: CI installs the newest Streamlit, and the tests now depend on 1.66
+# behaviour. Below it, AppTest.switch_page opens pages that are not in
+# st.navigation, so the VP access tests fail on an older local venv while CI
+# passes; and 1.66 is where un-submitted form values started being discarded,
+# which the login-gate tests are written for. (The API floor was 1.49, for
+# width="stretch" on st.dataframe/st.plotly_chart.)
+streamlit>=1.66
 # >=2.3: pandas 2.2 against numpy >=2.5 makes `pd.Timedelta(days=n)` itself emit
 # a DeprecationWarning that says it will become an error -- nothing to do with
 # our code, and it fires on the Review Queue's period filter. Verified on 3.0.5.
