@@ -126,7 +126,11 @@ def test_empty_submission_is_rejected(monkeypatch, isolated_secrets):
 
 def test_correct_password_admits(monkeypatch, isolated_secrets):
     app = run_gate(monkeypatch, isolated_secrets, production=True, secrets={"treasury": {"password": PASSWORD}})
-    app.text_input[0].set_value(PASSWORD).run()
+    # Type and submit in one run. The password box is inside `st.form`, and
+    # from Streamlit 1.66 a run without the submit button discards the typed
+    # value -- as a real browser does -- so `.set_value(...).run()` first would
+    # submit an empty password.
+    app.text_input[0].set_value(PASSWORD)
     app.button[0].click().run()
     rendered = " ".join(str(m.value) for m in app.markdown)
     assert "PAST_THE_GATE" in rendered
@@ -139,7 +143,7 @@ def test_operator_email_is_used_when_configured(monkeypatch, isolated_secrets):
         production=True,
         secrets={"treasury": {"password": PASSWORD, "operator_email": "nic@example.edu"}},
     )
-    app.text_input[0].set_value(PASSWORD).run()
+    app.text_input[0].set_value(PASSWORD)
     app.button[0].click().run()
     rendered = " ".join(str(m.value) for m in app.markdown)
     assert "nic@example.edu" in rendered

@@ -1,0 +1,15 @@
+# Every pull request needs the treasurer's approval before it can merge. The
+# branch ruleset on sandbox/mvp-rebuild and main turns on "Require review from
+# Code Owners", so a partner's approval alone is not enough.
+#
+# When the treasurer changes, replace the username below.
+*                                       @Nicsbadatcoding
+
+# Treasurer-owned files (CONTRIBUTING.md §4). Already covered by the line
+# above; listed so the ownership is explicit and survives if the catch-all
+# ever changes.
+/ais_fmd/config/categories.py           @Nicsbadatcoding
+/ais_fmd/config/card_roster.json        @Nicsbadatcoding
+/ais_fmd/config/spend_policy.json       @Nicsbadatcoding
+/tests/test_treasury_decisions.py       @Nicsbadatcoding
+/.github/                               @Nicsbadatcoding

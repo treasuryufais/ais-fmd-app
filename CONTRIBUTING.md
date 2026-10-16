@@ -3,17 +3,19 @@
 How we build the AIS Financial Management app together this semester. Read this
 once end to end before your first commit. It is short on purpose.
 
-**The model in one line:** you fork the repo, work on a branch in your fork,
-prove your change in the sandbox, and open a pull request. Your partner reviews
-it, and the treasurer merges it. Nobody else has push access to the main repo,
-so every change arrives this way.
+**The model in one line:** you work on your own branch in the team repo, prove
+your change in the sandbox, and open a pull request. Your partner reviews it,
+and the treasurer approves and merges it. Nobody can push to
+`sandbox/mvp-rebuild` or `main` directly — GitHub blocks it — so every change
+arrives this way.
 
 ---
 
 ## 1. Get set up (do this before your first team session)
 
 You need: Git, Python **3.11, 3.12 or 3.13** (CI tests all three), and a
-GitHub account. The repo is public, so you do not need to be added to anything.
+GitHub account. Send the treasurer your GitHub username; you will get an email
+invitation to the repo. Accept it before you push anything.
 
 `main` still holds the old app. **All work this semester branches from and
 targets `sandbox/mvp-rebuild`.**
@@ -28,21 +30,23 @@ cd ais-fmd-app
 No Git? Download the ZIP instead:
 <https://github.com/treasuryufais/ais-fmd-app/archive/refs/heads/sandbox/mvp-rebuild.zip>
 
-### Going to contribute? Fork first
+### Going to contribute?
 
-1. On <https://github.com/treasuryufais/ais-fmd-app>, click **Fork**.
-   **Untick "Copy the `main` branch only"** — otherwise your fork will not
-   have `sandbox/mvp-rebuild`.
-2. Clone your fork and connect it to the team repo:
+Once you have accepted the invitation, the clone above is all you need. You
+push your branches straight to the team repo; there is no fork and only one
+remote, `origin`.
+
+Already made a fork earlier in the semester? Point your clone at the team repo
+and push your branches there:
 
 ```bash
-git clone -b sandbox/mvp-rebuild https://github.com/<your-username>/ais-fmd-app.git
-cd ais-fmd-app
-git remote add upstream https://github.com/treasuryufais/ais-fmd-app.git
+git remote set-url origin https://github.com/treasuryufais/ais-fmd-app.git
+git remote remove upstream
+git fetch origin
+git push -u origin <your-branch>
 ```
 
-`origin` is your fork (you push here). `upstream` is the team repo (you pull
-from here, and your pull requests go to it).
+Then delete the fork on GitHub (your fork → Settings → Delete this repository).
 
 ### Create a virtual environment and install
 
@@ -135,11 +139,15 @@ a pull request.
 ### Start a piece of work
 
 ```bash
-git fetch upstream
-git checkout -b <team>/<short-description> upstream/sandbox/mvp-rebuild   # e.g. vp/committee-home
+git fetch origin
+git checkout -b <team>/<short-description> origin/sandbox/mvp-rebuild   # e.g. vp/committee-home
 ```
 
-Team prefixes: `vp/`, `cat/`, `model/`, `platform/`, `qa/`, `close/`, `ux/`.
+Team prefixes: `vp/`, `cat/`, `model/`, `platform/`, `qa/`, `close/`, `ux/`, `ai/`.
+
+Everyone's branches live in the same repo, so **only push to branches you
+created**, and never delete someone else's. GitHub deletes a branch
+automatically once its pull request merges.
 
 **One branch per person per slice of work.** Pairs split a feature into pieces
 and each person opens their own pull requests. Small PRs get reviewed in a day;
@@ -150,8 +158,8 @@ and each person opens their own pull requests. Small PRs get reviewed in a day;
 At least twice a week, bring in what has been merged since you branched:
 
 ```bash
-git fetch upstream
-git merge upstream/sandbox/mvp-rebuild
+git fetch origin
+git merge origin/sandbox/mvp-rebuild
 ```
 
 Fix any conflicts, re-run the tests, commit.
@@ -169,17 +177,22 @@ Fix any conflicts, re-run the tests, commit.
 ### Open the pull request
 
 ```bash
-git push -u origin <team>/<short-description>    # goes to YOUR fork
+git push -u origin <team>/<short-description>
 ```
 
 - On GitHub, click **Compare & pull request**. Set the base to
-  **`treasuryufais/ais-fmd-app` → `sandbox/mvp-rebuild`** (not `main`).
+  **`sandbox/mvp-rebuild`** (not `main`).
 - Fill in the template — it asks how you proved the change in the sandbox.
-- Ask **your partner** to review it first. Once they approve and the tests are
-  green, the treasurer reviews and merges.
-- On your very first PR, the automatic tests wait until the treasurer clicks
-  **Approve and run**. That is GitHub's default for forks, not a problem with
-  your PR.
+- Ask **your partner** to review it first. The treasurer is added as a
+  reviewer automatically (`.github/CODEOWNERS`).
+- The **Merge** button stays grey until the tests are green **and** the
+  treasurer approves. A partner's approval alone does not unlock it — that is
+  intended, not a problem with your PR.
+- Pushing new commits after an approval clears it, so the final version is the
+  one that gets approved.
+- The treasurer merges with **Squash and merge**, so your branch becomes one
+  commit on `sandbox/mvp-rebuild`. Then start your next slice from a fresh
+  branch (see "Start a piece of work").
 
 ### Shared files — coordinate before editing
 
@@ -230,3 +243,24 @@ module your team owns → its tests. Your team brief in
 
 Stuck for more than 30 minutes? Ask in the team chat with what you tried. That
 is expected, not a failure.
+
+---
+
+## 9. For the treasurer: repo settings that enforce this
+
+Contributors don't need this section. It records how GitHub is configured, so
+the next treasurer can check or rebuild it.
+
+- **Collaborators** (Settings → Collaborators): each contributor has **Write**,
+  never Admin. Remove them at the end of the semester.
+- **Ruleset** (Settings → Rules → Rulesets), active on `sandbox/mvp-rebuild`
+  and `main`:
+  - require a pull request, 1 approval, **review from Code Owners**, dismiss
+    stale approvals on new commits, all conversations resolved
+  - require status checks `test (3.11)`, `test (3.12)`, `test (3.13)`
+  - block force pushes and deletions
+  - bypass list: the treasurer only, for emergencies
+- **Pull requests** (Settings → General): squash merging only;
+  "Automatically delete head branches" on.
+- **CODEOWNERS** (`.github/CODEOWNERS`): replace the username when the
+  treasurer changes.
