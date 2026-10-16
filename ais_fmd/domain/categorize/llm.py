@@ -20,6 +20,11 @@ rows no deterministic rule and no merchant memory could resolve -- reaches this
 module now, and the prompt only describes the distinction that is genuinely
 ambiguous.
 
+SPEND REVIEW. A second, separate pass: `review_spend` asks whether a booked
+transaction *fits* its committee, using config/spend_review_prompt.md as the
+system prompt. It returns verdicts and never a category -- categorization and
+spend review must not change each other's output.
+
 In sandbox mode this module never makes a network call. `openai` is not even
 installed in the sandbox venv.
 """
@@ -27,13 +32,18 @@ installed in the sandbox venv.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import pandas as pd
 
 from ... import settings
-from ...config.categories import COMMITTEE_BY_ID
+from ...config.categories import COMMITTEE_BY_ID, committee_name
 from .predicates import (
     COMMITTEE_PURPOSE,
     Classification,
+    extract_purchase_date,
     looks_like_bar,
     looks_like_food_merchant,
     weekday_from_details,
@@ -134,15 +144,20 @@ def _render_row(index: int, record: dict) -> str:
     return f"{line} | Upstream_Note: {note[:200]}" if note else line
 
 
-def _parse_response(payload: str, batch: list[tuple[int, dict]]) -> dict[int, Classification]:
-    """Map a model response back onto the original row positions."""
+def _load_results(payload: str) -> list:
+    """The `results` list of a JSON reply, tolerating a ```json fence."""
     text = payload.strip()
     if text.startswith("```"):
         text = text.split("```")[1] if "```" in text[3:] else text.strip("`")
         text = text.removeprefix("json").strip()
 
     data = json.loads(text)
-    results = data.get("results", []) if isinstance(data, dict) else []
+    return data.get("results", []) if isinstance(data, dict) else []
+
+
+def _parse_response(payload: str, batch: list[tuple[int, dict]]) -> dict[int, Classification]:
+    """Map a model response back onto the original row positions."""
+    results = _load_results(payload)
 
     positions = {local: original for local, (original, _) in enumerate(batch, start=1)}
     out: dict[int, Classification] = {}
@@ -185,31 +200,13 @@ def classify_residual(residual: list[tuple[int, dict]]) -> LLMOutcome:
     if not residual:
         return outcome
 
-    if not settings.llm_enabled():
-        outcome.skipped_reason = (
-            "Model pass disabled. In sandbox mode no network call is ever made; "
-            "these rows are left uncategorized for the review queue."
-        )
+    client, outcome.skipped_reason = _model_client(
+        "OpenAI categorization request",
+        disabled="these rows are left uncategorized for the review queue.",
+    )
+    if client is None:
         return outcome
 
-    try:
-        settings.assert_external_call_allowed("OpenAI categorization request")
-    except settings.SandboxViolation as exc:
-        outcome.skipped_reason = str(exc)
-        return outcome
-
-    try:
-        from openai import OpenAI  # imported lazily; absent in the sandbox venv
-    except ImportError:
-        outcome.skipped_reason = (
-            "The 'openai' package is not installed. The sandbox venv omits it "
-            "deliberately so no request can be made."
-        )
-        return outcome
-
-    import os
-
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
     model = settings.llm_model()
     batch_size = settings.llm_batch_size()
 
@@ -232,6 +229,220 @@ def classify_residual(residual: list[tuple[int, dict]]) -> LLMOutcome:
             )
             content = response.choices[0].message.content or ""
             outcome.classifications.update(_parse_response(content, batch))
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            outcome.batches_failed += 1
+            outcome.errors.append(f"{type(exc).__name__}: {exc}")
+
+    return outcome
+
+
+def _model_client(what: str, *, disabled: str):
+    """
+    An OpenAI client, or None with the reason no request may be made.
+
+    Every guard lives here so both passes refuse in exactly the same places:
+    disabled, sandbox, package absent.
+    """
+    if not settings.llm_enabled():
+        return None, (
+            "Model pass disabled. In sandbox mode no network call is ever made; "
+            + disabled
+        )
+
+    try:
+        settings.assert_external_call_allowed(what)
+    except settings.SandboxViolation as exc:
+        return None, str(exc)
+
+    try:
+        from openai import OpenAI  # imported lazily; absent in the sandbox venv
+    except ImportError:
+        return None, (
+            "The 'openai' package is not installed. The sandbox venv omits it "
+            "deliberately so no request can be made."
+        )
+
+    import os
+
+    return OpenAI(api_key=os.environ["OPENAI_API_KEY"]), None
+
+
+# --------------------------------------------------------------------------
+# Spend review: does a booked transaction fit its committee?
+# --------------------------------------------------------------------------
+
+# Treasurer-owned, like card_roster.json. Read on every run rather than cached,
+# so an edit to the file is the next review's prompt without a restart.
+SPEND_REVIEW_PROMPT_FILE = (
+    Path(__file__).resolve().parent.parent.parent / "config" / "spend_review_prompt.md"
+)
+VERDICTS = ("fits", "question", "other_committee")
+_EDITOR_NOTES_RE = re.compile(r"<!--.*?-->", re.S)
+
+
+def load_spend_review_prompt(path: Path | None = None) -> str:
+    """The review's system prompt: the treasurer's file, minus its editor's notes."""
+    text = (path or SPEND_REVIEW_PROMPT_FILE).read_text(encoding="utf-8")
+    return _EDITOR_NOTES_RE.sub("", text).strip()
+
+
+@dataclass(frozen=True)
+class SpendVerdict:
+    """The model's view of one booked transaction. Deliberately has no category."""
+
+    verdict: str  # one of VERDICTS
+    suggested_committee_id: int | None
+    confidence: float
+    reason: str
+    message_to_vp: str
+
+    @property
+    def flagged(self) -> bool:
+        return self.verdict != "fits"
+
+
+@dataclass
+class SpendReviewOutcome:
+    verdicts: dict[int, SpendVerdict] = field(default_factory=dict)
+    # Rows with no committee. The prompt reviews bookings, so these are the
+    # categorizer's (or a human's) to settle first.
+    not_reviewed: list[int] = field(default_factory=list)
+    batches_attempted: int = 0
+    batches_failed: int = 0
+    errors: list[str] = field(default_factory=list)
+    skipped_reason: str | None = None
+    prompt_chars: int = 0
+
+    @property
+    def ran(self) -> bool:
+        return self.batches_attempted > 0
+
+    @property
+    def flagged(self) -> dict[int, SpendVerdict]:
+        return {index: v for index, v in self.verdicts.items() if v.flagged}
+
+
+def _booked_committee(record: dict) -> int | None:
+    value = record.get("budget_category")
+    try:
+        committee_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return committee_id if committee_id in COMMITTEE_BY_ID else None
+
+
+def _render_review_row(index: int, record: dict) -> str:
+    """One row as the prompt's 'Reading the bank line' section expects it."""
+    details = " ".join(str(record.get("details") or "").split())
+    committee_id = _booked_committee(record)
+    posted = record.get("transaction_date") or ""
+    purchased = extract_purchase_date(details)
+    if purchased:
+        weekday = weekday_from_details(details, posted)
+    else:
+        # No embedded purchase date (Zelle, Venmo, fees): the row date is it.
+        when = pd.to_datetime(posted, errors="coerce")
+        weekday = "Unknown" if pd.isna(when) else when.day_name()
+    return (
+        f"{index}. Booked_To: {committee_id} {committee_name(committee_id)} | "
+        f"Posted: {posted} | Purchased: {purchased or 'same'} ({weekday}) | "
+        f"Amount: {record.get('amount')} | Account: {record.get('account') or ''} | "
+        f"Details: {details[:180]}"
+    )
+
+
+def _parse_review_response(
+    payload: str, batch: list[tuple[int, dict]]
+) -> dict[int, SpendVerdict]:
+    """Map a review reply back onto the original row positions."""
+    positions = {local: original for local, (original, _) in enumerate(batch, start=1)}
+    out: dict[int, SpendVerdict] = {}
+    for item in _load_results(payload):
+        if not isinstance(item, dict):
+            continue
+        original_index = positions.get(item.get("index"))
+        verdict = str(item.get("verdict") or "").strip()
+        if original_index is None or verdict not in VERDICTS:
+            continue
+        suggested = None
+        if verdict == "other_committee":
+            try:
+                suggested = int(item.get("suggested_committee_id"))
+            except (TypeError, ValueError):
+                suggested = None
+            if suggested not in COMMITTEE_BY_ID:
+                suggested = None
+        try:
+            confidence = float(item.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            confidence = 0.5
+        message = str(item.get("message_to_vp") or "").strip()
+        out[original_index] = SpendVerdict(
+            verdict=verdict,
+            suggested_committee_id=suggested,
+            confidence=max(0.0, min(1.0, confidence)),
+            reason=str(item.get("reason") or "").strip()[:200],
+            message_to_vp=message[:400] if verdict != "fits" else "",
+        )
+    return out
+
+
+def review_spend(
+    rows: list[tuple[int, dict]],
+    *,
+    dues_baseline: str | None = None,
+) -> SpendReviewOutcome:
+    """
+    Ask whether each booked transaction fits its committee.
+
+    `rows` is (original_index, record), as for `classify_residual`; a record
+    carries `budget_category` -- the committee it is booked to. `dues_baseline`
+    is `dues.DuesBaseline.render()` for the term under review; without it the
+    prompt has the model infer the rate from the batch.
+
+    Returns verdicts only. Nothing here writes, or returns, a category.
+    """
+    outcome = SpendReviewOutcome()
+    reviewable = []
+    for index, record in rows:
+        if _booked_committee(record) is None:
+            outcome.not_reviewed.append(index)
+        else:
+            reviewable.append((index, record))
+    if not reviewable:
+        return outcome
+
+    client, outcome.skipped_reason = _model_client(
+        "OpenAI spend review request",
+        disabled="no transactions are reviewed.",
+    )
+    if client is None:
+        return outcome
+
+    system_prompt = load_spend_review_prompt()
+    model = settings.llm_model()
+    batch_size = settings.llm_batch_size()
+    baseline = f"\n\n{dues_baseline.strip()}" if dues_baseline else ""
+
+    for start in range(0, len(reviewable), batch_size):
+        batch = reviewable[start : start + batch_size]
+        listing = "\n".join(
+            _render_review_row(local, record) for local, (_, record) in enumerate(batch, start=1)
+        )
+        outcome.batches_attempted += 1
+        outcome.prompt_chars += len(listing)
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                temperature=0,
+                response_format={"type": "json_object"},
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Transactions:\n{listing}{baseline}"},
+                ],
+            )
+            content = response.choices[0].message.content or ""
+            outcome.verdicts.update(_parse_review_response(content, batch))
         except Exception as exc:  # noqa: BLE001 - reported, never swallowed
             outcome.batches_failed += 1
             outcome.errors.append(f"{type(exc).__name__}: {exc}")

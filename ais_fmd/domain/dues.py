@@ -21,7 +21,7 @@ import pandas as pd
 
 from .categorize.predicates import DUES_AMOUNTS, DuesSchedule, DuesWindow
 from .money import parse_amount
-from .terms import attach_semester, date_range_for_semester, dues_terms
+from .terms import attach_semester, date_range_for_semester, dues_terms, ordered_semesters
 
 DUES_COMMITTEE_ID = 1
 
@@ -416,6 +416,102 @@ def payer_roster(
         .sort_values("Paid", ascending=False)
     )
     return roster[columns].reset_index(drop=True)
+
+
+# The spend review's dues baseline. Rates change most years ($25 -> $30 -> $35
+# -> $50 since 2022), so the review prompt does not hardcode them: it is handed
+# the term's own pattern instead. In every past term one amount was 82-96% of
+# all dues payments, which is what makes "the most common amount" a reliable
+# standard. See "Dues baseline" in config/spend_review_prompt.md.
+BASELINE_MIN_PAYMENTS = 30  # below this, the term is too young to speak for itself
+ESTABLISHED_SHARE = 0.05
+ESTABLISHED_COUNT = 5
+
+
+@dataclass(frozen=True)
+class DuesBaseline:
+    semester: str
+    payments: int  # dues payments in `semester` itself, however few
+    source: str  # the semester the rates below were read from
+    standard: float
+    standard_share: float
+    established: tuple[tuple[float, float], ...]  # (amount, share), most common first
+
+    def render(self) -> str:
+        """The block the spend review appends to its user message."""
+        established = ", ".join(
+            f"${amount:,.2f} ({share:.0%})" for amount, share in self.established
+        )
+        if self.source == self.semester:
+            source = "this term"
+        else:
+            source = f"{self.source} (this term has only {self.payments} so far)"
+        return "\n".join([
+            f"DUES BASELINE -- {self.semester} ({self.payments} payments so far)",
+            f"standard: ${self.standard:,.2f} ({self.standard_share:.0%})",
+            f"also established: {established or 'none'}",
+            f"source: {source}",
+        ])
+
+
+def dues_baseline(
+    df_transactions: pd.DataFrame,
+    df_terms: pd.DataFrame,
+    semester: str,
+    *,
+    min_payments: int = BASELINE_MIN_PAYMENTS,
+) -> DuesBaseline | None:
+    """
+    What dues normally look like in `semester`, read from its own payments.
+
+    Only money in that is booked to Dues counts -- this describes what the
+    ledger already holds, so the review can say which payments stand out from
+    it. `standard` is the most common amount; `established` is every other
+    amount that is at least 5% of payments or appears at least 5 times. A term
+    with fewer than `min_payments` (its first days) borrows the most recent
+    earlier term that has enough. None when no term has any dues at all.
+    """
+    if df_transactions.empty:
+        return None
+
+    frame = df_transactions[df_transactions["budget_category"] == DUES_COMMITTEE_ID]
+    amounts = pd.Series([parse_amount(value) for value in frame["amount"]], index=frame.index)
+    frame = frame.assign(_amount=amounts.map(lambda a: float(a) if a is not None else 0.0))
+    frame = frame[frame["_amount"] > 0]
+    if frame.empty:
+        return None
+
+    tagged = attach_semester(frame, dues_terms(df_terms))
+    by_term = tagged.groupby("Semester")["_amount"]
+    counts = by_term.size()
+    own = int(counts.get(semester, 0))
+
+    source = semester
+    if own < min_payments:
+        ordered = ordered_semesters(df_terms)
+        earlier = ordered[: ordered.index(semester)] if semester in ordered else []
+        fallback = next((s for s in reversed(earlier) if counts.get(s, 0) >= min_payments), None)
+        if fallback is not None:
+            source = fallback
+        elif own == 0:
+            return None
+
+    shares = by_term.get_group(source).round(2).value_counts()
+    total = int(shares.sum())
+    standard = float(shares.index[0])
+    established = tuple(
+        (float(amount), count / total)
+        for amount, count in shares.iloc[1:].items()
+        if count / total >= ESTABLISHED_SHARE or count >= ESTABLISHED_COUNT
+    )
+    return DuesBaseline(
+        semester=semester,
+        payments=own,
+        source=source,
+        standard=standard,
+        standard_share=int(shares.iloc[0]) / total,
+        established=established,
+    )
 
 
 def outstanding(collected_payers: int, expected_members: int) -> dict:
