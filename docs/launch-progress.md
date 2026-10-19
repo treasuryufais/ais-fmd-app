@@ -63,6 +63,16 @@ INSERT INTO public.committeebudgets (termid, committeeid, budget_amount) VALUES
 
 May 6 to Jul 31, 2026 falls in no term, and so do 25 transactions from May 6 to Aug 17, 2025.
 
+## Live progress, 2026-10-19
+
+- Treasurer chose not to take a fresh backup. Live was verified identical to the 2026-10-15 Drive backup: all 2,802 transactions (category fingerprint `1f4382fd…`) and all 125 budgets, row for row.
+- Edge logs show no API traffic to live in the previous 24 hours. The legacy anon key is already disabled on live.
+- Decision: **hold `008_lock_down` until the new app is deployed and signed into**, so nothing that works today breaks before the switch.
+- **Applied to live, with the treasurer's permission:** `001, 003, 005, 006, 007, 009, 010, 012`; natural_key backfill (2,802 keys, all distinct); the Fall 2026 term and 14 budgets ($13,100; dues 35/50/65); Fall 2022 through Spring 2026 locked (`locked_by = 'treasurer (launch 2026-10-19)'`).
+- **Verified after every step and at the end:** 2,802 transactions; net $18,050.43, income $130,526.17, expenses −$112,475.74; content fingerprint `7e7e67a8…`, category fingerprint `1f4382fd…`, and the original 125 budgets' fingerprint `7a24f0f2…` all identical to the 2026-10-15 backup.
+- **Not yet applied:** `008_lock_down`, held until the new app is deployed. An interim lock of only the new tables and RPCs was blocked by the permission check, so it awaits the treasurer's call. Until 008 runs, the new tables (`members`, `merchants`, `labeled_examples`, `transaction_audit`, `statement_balances`) and the two save RPCs are reachable with the publishable key. Keep `members` empty until then.
+- **Known gap:** a locked term blocks transaction imports and edits, but **not budget edits**. The budget editor doesn't check the lock yet.
+
 ## Next: live switch-over (each step needs the treasurer's OK)
 
 1. Take a fresh backup into a new dated Drive subfolder, and record its totals.
