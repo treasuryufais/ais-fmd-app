@@ -149,6 +149,15 @@ def test_operator_email_is_used_when_configured(monkeypatch, isolated_secrets):
     assert "nic@example.edu" in rendered
 
 
+def test_pasted_password_with_stray_whitespace_admits(monkeypatch, isolated_secrets):
+    """A password pasted from Notepad or a password manager often carries a space."""
+    app = run_gate(monkeypatch, isolated_secrets, production=True, secrets={"treasury": {"password": PASSWORD}})
+    app.text_input[0].set_value(f"  {PASSWORD} ")
+    app.button[0].click().run()
+    rendered = " ".join(str(m.value) for m in app.markdown)
+    assert "PAST_THE_GATE" in rendered
+
+
 def test_signed_in_operator_is_admin(monkeypatch):
     monkeypatch.setenv(settings.ENV_VAR, "production")
     identity = auth.Identity(email="x@example.edu", role=auth.Role.ADMIN)

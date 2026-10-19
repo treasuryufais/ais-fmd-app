@@ -370,6 +370,66 @@ def test_review_queue_period_anchors_on_the_newest_transaction(seeded_db, use_db
     assert not any("Nothing unresolved" in str(e.value) for e in app.error)
 
 
+def test_review_queue_never_offers_a_row_that_already_has_a_committee(seeded_db, use_db):
+    """
+    REGRESSION (2026-10-16). Stored categorizations are the record. The queue
+    used to list any row missing a committee OR a purpose -- so history from the
+    original app, which mostly has a committee and no purpose, appeared with the
+    committee box pre-set to the categorizer's suggestion, and one "Apply
+    decisions" would have overwritten what Supabase already had.
+
+    Also pins the second half of the rule: blanks carried over from the original
+    app (no source_file) stay out of the queue unless the treasurer opts in.
+    """
+    import sqlite3
+
+    database = use_db(seeded_db)
+    with sqlite3.connect(database) as connection:
+        ids = [
+            row[0]
+            for row in connection.execute(
+                "SELECT transactionid FROM transactions ORDER BY transactionid LIMIT 2"
+            )
+        ]
+        stored, history_blank = ids
+        # The largest amounts in the ledger, so the queue's default "largest
+        # first" order puts them in the first batch if they are listed at all.
+        connection.execute(
+            "UPDATE transactions SET budget_category = 5, purpose = NULL, source_file = NULL, "
+            "amount = -99999 WHERE transactionid = ?",
+            (stored,),
+        )
+        connection.execute(
+            "UPDATE transactions SET budget_category = NULL, purpose = NULL, source_file = NULL, "
+            "amount = -99998 WHERE transactionid = ?",
+            (history_blank,),
+        )
+
+    def offered(app: AppTest) -> set[int]:
+        return {
+            int(box.key.rsplit("_", 1)[1])
+            for box in app.selectbox
+            if box.key and box.key.startswith("queue_committee_")
+        }
+
+    app = run_view(VIEWS / "ReviewQueue.py", queue_period="Everything", queue_batch=50)
+    assert_clean(app, "ReviewQueue with carried-over history")
+    assert stored not in offered(app), "a row with a stored committee reached the queue"
+    assert history_blank not in offered(app), "an original-app blank was offered by default"
+    by_default = {m.label: m.value for m in app.metric}["Awaiting review"]
+
+    app = run_view(
+        VIEWS / "ReviewQueue.py",
+        queue_period="Everything",
+        queue_batch=50,
+        queue_include_history=True,
+    )
+    assert_clean(app, "ReviewQueue including original-app blanks")
+    assert stored not in offered(app), "opting in to history must still never offer a stored committee"
+    with_history = {m.label: m.value for m in app.metric}["Awaiting review"]
+    assert int(with_history.replace(",", "")) == int(by_default.replace(",", "")) + 1
+
+
 def test_treasury_tabs_all_render(seeded_db, use_db):
     """Treasury is 467 lines doing upload, budgets, terms, export and locking."""
     use_db(seeded_db)

@@ -258,7 +258,9 @@ def login_gate() -> None:
     if submitted:
         # Constant-time: a plain `==` leaks the length of the shared prefix
         # through timing. Cheap to do correctly.
-        if hmac.compare_digest(supplied, expected):
+        # Trimmed like `expected` already is: a password pasted from a notes
+        # app or password manager often carries a trailing space or newline.
+        if hmac.compare_digest(supplied.strip(), expected):
             st.session_state[SESSION_KEY] = Identity(
                 email=_operator_email(), role=Role.ADMIN
             )

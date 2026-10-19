@@ -54,15 +54,44 @@ if transactions.empty:
 # ui/flags.py so this shared page stays untouched otherwise.
 flag_ui.treasurer_panel(transactions, identity.email)
 
-pending = transactions[
-    transactions["budget_category"].isna() | transactions["purpose"].isna()
-].copy()
+# Stored categorizations are the record (treasury, 2026-10-02, restated
+# 2026-10-16). Much of the history carried over from the original app has a
+# committee but no purpose, and this queue used to list those rows too -- with
+# the committee box pre-set to the categorizer's suggestion, so one "Apply
+# decisions" would have replaced a stored committee. The queue now works only
+# rows with NO committee. Correcting a stored committee is a deliberate,
+# one-row edit on the Transactions page.
+#
+# History from the original app has no `source_file` (the column arrived with
+# migration 001); anything imported by this app has one. At this stage only new
+# imports are worked here -- the old blanks stay as Supabase has them unless the
+# treasurer chooses to include them.
+needs_committee = transactions["budget_category"].isna()
+if "source_file" in transactions.columns:
+    from_original_app = transactions["source_file"].isna()
+else:
+    from_original_app = pd.Series(False, index=transactions.index)
+
+history_blanks = int((needs_committee & from_original_app).sum())
+include_history = st.toggle(
+    "Include blank rows from before this app",
+    value=False,
+    key="queue_include_history",
+    disabled=not history_blanks,
+    help=(
+        f"{history_blanks:,} transaction(s) carried over from the original app have "
+        "no committee. They are left exactly as stored unless you choose to work "
+        "them here. Rows that already have a committee are never shown."
+    ),
+)
+
+pending = transactions[needs_committee & (include_history | ~from_original_app)].copy()
 
 # Headline coverage is a property of the whole ledger, not of whatever period is
 # being worked. Measuring it after the period filter reported "784 categorized,
 # 87.9% coverage" when the real figures were 566 and 63.5% -- the filtered-out
 # rows were being counted as resolved.
-total_pending = len(pending)
+total_pending = int(needs_committee.sum())
 total_resolved = len(transactions) - total_pending
 
 # --- Period ------------------------------------------------------------------
