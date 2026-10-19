@@ -1,0 +1,27 @@
+# What Streamlit Community Cloud installs for the PRODUCTION app.
+#
+# Cloud uses the first dependency file it finds, in the order uv.lock, Pipfile,
+# environment.yml, requirements.txt, pyproject.toml -- so this file wins there,
+# while local installs keep using requirements.txt, which deliberately leaves out
+# `supabase` (its absence is one of the sandbox's safety layers; see README).
+#
+# Must list exactly the packages in requirements-production.txt (which pulls in
+# requirements.txt), minus test-only tools. tests/test_deploy_dependencies.py
+# fails if the two drift apart -- change both together.
+
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+streamlit = ">=1.66"
+pandas = ">=2.3"
+plotly = ">=5.20"
+openpyxl = ">=3.1.5"
+supabase = ">=2.15"
+openai = ">=1.0"
+authlib = ">=1.3.2"
+
+[requires]
+python_version = "3.12"

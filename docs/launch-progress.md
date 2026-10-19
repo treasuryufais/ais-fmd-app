@@ -69,10 +69,10 @@ May 6 to Jul 31, 2026 falls in no term, and so do 25 transactions from May 6 to 
 2. Apply `001, 003, 005, 006, 007, 008, 009, 010, 012` to live, checking the totals and category fingerprint after.
 3. Run `scripts/prod/backfill_natural_keys.py` with the live secret key: dry run, then `--apply`.
 4. Add the Fall 2026 term and budgets (SQL above).
-5. **Proposed:** lock the finished terms, Fall 2022 through Spring 2026, so their transactions and budgets can't be changed by accident.
+5. Lock the finished terms, Fall 2022 through Spring 2026, so their transactions and budgets can't be changed by accident. Approved by the treasurer 2026-10-19.
 6. Re-check totals against the fresh backup. They must match exactly.
 7. Deploy to Streamlit Community Cloud with secrets `AIS_FMD_ENV = "production"`, `[supabase] url` + `secret_key`, and `[treasury] password`. The treasurer enters these in the Cloud settings. **The original app stops working once 008 is on live**, so switch over in one go, then sign in once in a normal browser.
-   - **Dependencies on Cloud:** Cloud uses the first dependency file it finds, in the order `uv.lock` → `Pipfile` → `environment.yml` → `requirements.txt` → `pyproject.toml` (Streamlit docs, app-dependencies page). `requirements.txt` deliberately omits `supabase`, because its absence is a sandbox safety layer. Proposed: add a root `Pipfile` listing `requirements-production.txt`'s packages, so Cloud installs the production set while local installs stay on `requirements.txt`. Add a test that keeps the two in step. Not done yet; decide at deploy time.
+   - **Dependencies on Cloud:** Cloud uses the first dependency file it finds, in the order `uv.lock` → `Pipfile` → `environment.yml` → `requirements.txt` → `pyproject.toml` (Streamlit docs, app-dependencies page). `requirements.txt` deliberately omits `supabase`, because its absence is a sandbox safety layer. A root `Pipfile` (added 2026-10-19, approved by the treasurer) lists `requirements-production.txt`'s packages, so Cloud installs the production set while local installs stay on `requirements.txt`. `tests/test_deploy_dependencies.py` keeps the two in step. In the Cloud app settings, pick Python 3.12.
 8. Upload the bank statements since 2026-01-22 in the new app. Overlaps are safe, because re-imported rows add 0.
 
 ## Open items
