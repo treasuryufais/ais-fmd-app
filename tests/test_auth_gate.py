@@ -270,6 +270,23 @@ def test_sandbox_identity_is_still_fabricated(monkeypatch):
     assert "Treasurer" in " ".join(str(m.value) for m in app.markdown)
 
 
+def test_sandbox_login_switch_runs_the_real_gate(monkeypatch, isolated_secrets):
+    """AIS_FMD_SANDBOX_LOGIN=1 closes the sandbox, so Google sign-in can be tried locally."""
+    monkeypatch.setenv("AIS_FMD_SANDBOX_LOGIN", "1")
+    app = run_gate(monkeypatch, isolated_secrets, production=False, secrets={"treasury": {"password": PASSWORD}})
+    rendered = " ".join(str(m.value) for m in app.markdown)
+    assert "PAST_THE_GATE" not in rendered
+    app.text_input[0].set_value(PASSWORD).run()
+    app.button[0].click().run()
+    assert "PAST_THE_GATE" in " ".join(str(m.value) for m in app.markdown)
+
+
+def test_sandbox_login_switch_has_no_effect_in_production(monkeypatch):
+    monkeypatch.setenv(settings.ENV_VAR, "production")
+    monkeypatch.setenv("AIS_FMD_SANDBOX_LOGIN", "1")
+    assert not settings.sandbox_login_enabled()
+
+
 # --- current_user contract ---------------------------------------------------
 
 def test_current_user_refuses_to_fabricate_in_production(monkeypatch):

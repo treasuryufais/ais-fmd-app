@@ -468,9 +468,9 @@ def sidebar_footer() -> None:
     # session did. On a shared treasury laptop the next person to open the tab
     # was signed in as ADMIN.
     #
-    # Absent in the sandbox on purpose -- there the identity is fabricated and
+    # Absent in the open sandbox on purpose -- there the identity is fabricated and
     # the sidebar role switcher is how you change it.
-    if not settings.is_sandbox():
+    if not settings.is_sandbox() or settings.sandbox_login_enabled():
         identity = st.session_state.get(auth.SESSION_KEY)
         if identity is not None:
             st.sidebar.caption(f"Signed in as **{identity.email}**")

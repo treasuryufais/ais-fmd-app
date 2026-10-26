@@ -113,7 +113,7 @@ def current_user() -> Identity:
     nothing is there the caller has skipped the gate -- which is a programming
     error, not a state to paper over with a default.
     """
-    if settings.is_sandbox():
+    if _sandbox_open():
         if SESSION_KEY not in st.session_state:
             st.session_state[SESSION_KEY] = _default_identity()
         return st.session_state[SESSION_KEY]
@@ -125,6 +125,11 @@ def current_user() -> Identity:
             "before rendering any page."
         )
     return identity
+
+
+def _sandbox_open() -> bool:
+    """Sandbox without the login gate: identity fabricated, roles switchable."""
+    return settings.is_sandbox() and not settings.sandbox_login_enabled()
 
 
 # --- Production login --------------------------------------------------------
@@ -184,8 +189,10 @@ def login_gate() -> None:
 
     Halts the script when not signed in, so a page cannot render for an
     unauthenticated visitor even if it forgets to call `require`.
+
+    Skipped in sandbox unless `AIS_FMD_SANDBOX_LOGIN=1`.
     """
-    if settings.is_sandbox():
+    if _sandbox_open():
         return
     if SESSION_KEY in st.session_state:
         return
@@ -383,7 +390,7 @@ def require(required: Role) -> Identity:
         f"You are signed in as **{identity.role.label}**. "
         f"{ROLE_DESCRIPTIONS[required]}"
     )
-    if settings.is_sandbox():
+    if _sandbox_open():
         st.caption("Switch roles from the sidebar to explore this page.")
     st.stop()
     raise AssertionError("unreachable")  # pragma: no cover
@@ -456,7 +463,7 @@ def role_switcher() -> None:
     Deliberately absent in production -- there, the role comes from the
     authenticated session and cannot be chosen by the client.
     """
-    if not settings.is_sandbox():
+    if not _sandbox_open():
         return
 
     identity = current_user()

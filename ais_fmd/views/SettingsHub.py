@@ -1,13 +1,12 @@
 """
-Settings hub: the Audit Log, with Officer Access waiting beside it.
+Settings hub: Officer Access and the Audit Log.
 
 CONSOLIDATION (Pebble). The merged pages are unchanged files, run one at a time
 by shell.hub; the switcher renders beside each page's title. Remove this file
 and restore the original entries in app.py to undo the merge.
 
-MVP SCOPE. Officer Access stays deferred for the first production term (see
-app.py): its `profiles` table lives in migration 002, which is not run. With
-one view left the hub shows no switcher. Uncomment the line to turn it back on.
+Officer Access came back 2026-10-26 for the VP portal (see app.py). In
+production it needs the `profiles` table from migration 002.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ auth.current_user()
 shell.hub(
     "settings_hub",
     [
-        # ("Officer Access", "OfficerAccess.py", auth.Role.TREASURER),  # MVP: deferred
+        ("Officer Access", "OfficerAccess.py", auth.Role.TREASURER),
         ("Audit Log", "AuditLog.py", auth.Role.TREASURER),
     ],
 )

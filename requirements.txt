@@ -13,4 +13,7 @@ plotly>=5.20
 # >=3.1.5: pandas 3 refuses to read .xlsx with anything older, so every Excel
 # upload -- statements and membership rosters both -- fails at import time.
 openpyxl>=3.1.5
+# Google sign-in (st.login). Here rather than only in requirements-production.txt
+# so AIS_FMD_SANDBOX_LOGIN=1 can test the VP flow locally.
+Authlib>=1.3.2
 pytest>=8.0

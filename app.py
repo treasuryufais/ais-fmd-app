@@ -48,26 +48,16 @@ auth.login_gate()
 #   Transactions  = Transactions + Review Queue
 #   Assistant     = Assistant + Runbook (as "Help")
 #   Alerts & Data Quality = Alerts & Reports + Data Quality
-#   Settings      = Audit Log (+ Officer Access, deferred)
+#   Settings      = Officer Access + Audit Log
 #
-# MVP SCOPE. Two pages are commented out rather than deleted. In both cases the
-# page, its domain module, its tests and its SQLite tables all still exist and
-# still pass, and the Postgres side is written and waiting in
-# migrations/002_deferred_features.sql. Turning either back on means
-# uncommenting one line and running that migration.
+# MVP SCOPE. Reimbursements is commented out rather than deleted: the page, its
+# domain module, its tests and its SQLite tables all still exist and still
+# pass, and the Postgres side is waiting in migrations/002_deferred_features.sql.
 #
-#   Reimbursements  -- deferred from the start.
-#
-#   Officer Access  -- deferred 2026-09-08, for the first production term.
-#     This is the VP portal's admin page: it maps an email to a role and a
-#     committee, which is what Google sign-in looks up in `profiles`. The first
-#     term is treasurer-only, so nothing needs those mappings yet -- and leaving
-#     the page on would have shipped a feature whose table lives in a migration
-#     marked "do not run". It is commented out inside views/SettingsHub.py.
-#
-#     Note this does NOT disable Google sign-in itself: `auth.login_gate` still
-#     offers it whenever an `[auth]` section is configured, and is inert
-#     otherwise. It only removes the page for managing who gets in that way.
+# Officer Access, the VP portal's admin page, was deferred 2026-09-08 and turned
+# back on 2026-10-26. It maps an email to a role and a committee, which is what
+# Google sign-in looks up in `profiles`. In production that table comes from
+# migration 002.
 #
 # `Officer.py` ("My Committee") is deliberately a primary page -- it is a
 # read-only committee view that a treasurer outranks, and it stays available.

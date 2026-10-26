@@ -135,6 +135,19 @@ def sandbox_db_path() -> Path:
     return PROJECT_ROOT / "sandbox_data" / "ais_fmd_sandbox.db"
 
 
+# --- Login gate in sandbox ---------------------------------------------------
+
+def sandbox_login_enabled() -> bool:
+    """
+    Run the real login gate in sandbox mode, against the SQLite `profiles`.
+
+    Off by default, so the sandbox stays open and role-switchable. On, it is
+    the only way to try Google sign-in end to end without a production
+    database: the gate, `profiles` lookup and sign-out all run for real.
+    """
+    return is_sandbox() and _setting("AIS_FMD_SANDBOX_LOGIN").strip() == "1"
+
+
 # --- LLM configuration -------------------------------------------------------
 
 def llm_enabled() -> bool:
