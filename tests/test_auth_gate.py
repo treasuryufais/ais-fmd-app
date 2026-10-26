@@ -276,7 +276,7 @@ def test_sandbox_login_switch_runs_the_real_gate(monkeypatch, isolated_secrets):
     app = run_gate(monkeypatch, isolated_secrets, production=False, secrets={"treasury": {"password": PASSWORD}})
     rendered = " ".join(str(m.value) for m in app.markdown)
     assert "PAST_THE_GATE" not in rendered
-    app.text_input[0].set_value(PASSWORD).run()
+    app.text_input[0].set_value(PASSWORD)
     app.button[0].click().run()
     assert "PAST_THE_GATE" in " ".join(str(m.value) for m in app.markdown)
 
