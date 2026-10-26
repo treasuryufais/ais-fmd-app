@@ -16,4 +16,7 @@ openpyxl>=3.1.5
 # Google sign-in (st.login). Here rather than only in requirements-production.txt
 # so AIS_FMD_SANDBOX_LOGIN=1 can test the VP flow locally.
 Authlib>=1.3.2
+# Authlib's Starlette client imports httpx but doesn't depend on it; without it
+# "Sign in with Google" is a 500.
+httpx>=0.27
 pytest>=8.0
