@@ -57,7 +57,7 @@ auth.login_gate()
 # Officer Access, the VP portal's admin page, was deferred 2026-09-08 and turned
 # back on 2026-10-26. It maps an email to a role and a committee, which is what
 # Google sign-in looks up in `profiles`. In production that table comes from
-# migration 002.
+# migration 013.
 #
 # `Officer.py` ("My Committee") is deliberately a primary page -- it is a
 # read-only committee view that a treasurer outranks, and it stays available.
