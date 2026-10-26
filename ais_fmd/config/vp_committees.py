@@ -22,8 +22,8 @@ adds several lines together) is kept and tested, for the day one does.
 A committee that is not listed falls back to showing just its own single line,
 exactly as before, so an unmapped VP still sees something correct.
 
-No emails here. Which Google account belongs to which committee is entered by
-the treasurer on the Officer Access page, never in this public repository.
+The shared ufais.org officer mailboxes are mapped to a role and committee in
+officer_roster.json (2026-10-26); anyone else is added on the Officer Access page.
 """
 
 from __future__ import annotations

@@ -33,7 +33,7 @@ class Role(IntEnum):
     """Ordered, so `>=` expresses "at least this much access"."""
 
     MEMBER = 10
-    OFFICER = 20
+    OFFICER = 20  # a VP
     TREASURER = 30
     # Ranked above Treasurer so `can(TREASURER)` is true: the President sees every
     # page the Treasurer does. What they cannot do is write -- see `Identity.read_only`.
@@ -44,7 +44,7 @@ class Role(IntEnum):
     def label(self) -> str:
         return {
             Role.MEMBER: "Member",
-            Role.OFFICER: "Committee officer",
+            Role.OFFICER: "VP",
             Role.TREASURER: "Treasurer",
             Role.PRESIDENT: "President",
             Role.ADMIN: "Admin",
@@ -293,8 +293,9 @@ def login_gate() -> None:
 _ROLE_BY_NAME: dict[str, Role] = {
     "member": Role.MEMBER,
     "officer": Role.OFFICER,
-    "treasurer": Role.TREASURER,
+    "vp": Role.OFFICER,
     "president": Role.PRESIDENT,
+    "treasurer": Role.TREASURER,
     "admin": Role.ADMIN,
 }
 
@@ -323,10 +324,32 @@ def _google_auth_configured() -> bool:
     return bool(section.get("client_id")) and bool(section.get("server_metadata_url"))
 
 
+_ROSTER_PATH = settings.PROJECT_ROOT / "ais_fmd" / "config" / "officer_roster.json"
+
+
+def _roster_profile(email: str) -> dict | None:
+    """The hard-coded officer mailbox for this email, shaped like a `profiles` row."""
+    import json
+
+    roster = json.loads(_ROSTER_PATH.read_text(encoding="utf-8"))
+    entry = roster.get(email.strip().lower())
+    if not isinstance(entry, dict):
+        return None
+    return {"role": entry.get("role"), "committee_id": entry.get("committee")}
+
+
 def _default_profile_lookup(email: str) -> dict | None:
+    """officer_roster.json first; then anyone added under Officer Access."""
+    profile = _roster_profile(email)
+    if profile is not None:
+        return profile
+
     from .data import repositories as repo
 
-    return repo.backend().fetch_profile(email)
+    try:
+        return repo.backend().fetch_profile(email)
+    except Exception:  # noqa: BLE001 - no `profiles` table yet must mean "not listed", not a crash
+        return None
 
 
 def _identity_for_google_user(

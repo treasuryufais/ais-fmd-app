@@ -211,7 +211,7 @@ def test_an_unrecognised_role_string_is_refused():
     """A typo or a future role value in the data must not silently grant access."""
     identity = auth._identity_for_google_user(
         {"email": "vp@ufl.edu"},
-        fetch_profile=lambda email: {"role": "vp", "committee_id": 5},
+        fetch_profile=lambda email: {"role": "chair", "committee_id": 5},
     )
     assert identity is None
 
