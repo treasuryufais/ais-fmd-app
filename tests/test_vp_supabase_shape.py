@@ -196,6 +196,8 @@ def test_the_supabase_backend_implements_everything_the_vp_pages_call():
         "fetch_committees", "fetch_terms", "fetch_budgets", "fetch_transactions",
         "fetch_uploaded_files", "fetch_reimbursements", "fetch_flags", "create_flag",
         "resolve_flag", "fetch_profile",
+        # My Plan (migration 014)
+        "fetch_plan_lines", "replace_plan_lines", "fetch_budget_requests", "save_budget_request",
     ):
         assert f"def {method}(" in source, f"SupabaseBackend does not implement {method}"
 

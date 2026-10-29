@@ -51,7 +51,7 @@ class PageInfo:
 
 # The pages in `nav.VP_PAGES`, by the names below. Kept here as names because
 # `nav` imports Streamlit and `domain/` must not; a test checks the two agree.
-VP_PAGE_NAMES = frozenset({"My Committee", "My Transactions", "Assistant"})
+VP_PAGE_NAMES = frozenset({"My Committee", "My Transactions", "My Plan", "Assistant"})
 
 
 PAGES: tuple[PageInfo, ...] = (
@@ -109,6 +109,11 @@ PAGES: tuple[PageInfo, ...] = (
         "My Transactions", "My Transactions", None, "officer",
         "your committee's charges, where you can flag one with \"This isn't ours\"",
         ("my transactions", "my charges", "flag", "isn't ours", "not ours", "wrong charge", "dispute"),
+    ),
+    PageInfo(
+        "My Plan", "My Plan", None, "officer",
+        "your committee's plan for this semester and next, and a budget request to the treasurer",
+        ("my plan", "plan", "planned", "next semester", "budget request", "request more budget"),
     ),
     PageInfo(
         "Reconciliation", "Reconciliation", None, "member",

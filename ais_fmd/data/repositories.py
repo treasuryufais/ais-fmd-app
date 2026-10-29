@@ -531,6 +531,70 @@ def add_member_alias(term_id: str, match_key: str, alias_key: str, actor: str) -
     return backend().add_member_alias(term_id, match_key, alias_key, actor)
 
 
+# --- Committee plans and budget requests --------------------------------------
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _plan_lines(version: int, committee_ids: tuple[int, ...] | None, semester: str | None) -> pd.DataFrame:
+    return backend().fetch_plan_lines(committee_ids, semester)
+
+
+def load_plan_lines(
+    committee_ids: tuple[int, ...] | None = None, semester: str | None = None
+) -> pd.DataFrame:
+    """
+    Plan lines (category and amount). Raises if the backend cannot store plans
+    yet (migration 014 not run); callers check before drawing the feature.
+    """
+    scope = None if committee_ids is None else tuple(int(i) for i in committee_ids)
+    return _plan_lines(data_version(), scope, semester)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _budget_requests(
+    version: int, committee_ids: tuple[int, ...] | None, semester: str | None
+) -> pd.DataFrame:
+    return backend().fetch_budget_requests(committee_ids, semester)
+
+
+def load_budget_requests(
+    committee_ids: tuple[int, ...] | None = None, semester: str | None = None
+) -> pd.DataFrame:
+    """Budget requests; `None` committees is every committee's, for the treasurer."""
+    scope = None if committee_ids is None else tuple(int(i) for i in committee_ids)
+    return _budget_requests(data_version(), scope, semester)
+
+
+@_blocked_when_read_only(_update_refusal)
+def replace_plan_lines(
+    committee_id: int,
+    semester: str,
+    lines: list[dict],
+    allowed_committee_ids: tuple[int, ...],
+    actor: str,
+) -> UpdateResult:
+    result = backend().replace_plan_lines(committee_id, semester, lines, allowed_committee_ids, actor)
+    if result.updated:
+        invalidate()
+    return result
+
+
+@_blocked_when_read_only(_update_refusal)
+def save_budget_request(
+    committee_id: int,
+    semester: str,
+    amount: float,
+    reason: str,
+    allowed_committee_ids: tuple[int, ...],
+    actor: str,
+) -> UpdateResult:
+    result = backend().save_budget_request(
+        committee_id, semester, amount, reason, allowed_committee_ids, actor
+    )
+    if result.updated:
+        invalidate()
+    return result
+
+
 @_blocked_when_read_only(_update_refusal)
 def upsert_profile(
     email: str, role: str, committee_id: int | None, display_name: str, actor: str
