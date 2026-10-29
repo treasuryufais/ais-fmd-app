@@ -37,7 +37,6 @@ from ais_fmd.domain.terms import (
     date_range_for_semester,
     default_semester_index,
     ordered_semesters,
-    previous_semester,
 )
 from ais_fmd.ui import charts, committee_charts, shell, theme
 from ais_fmd.ui import flags as flag_ui
@@ -146,26 +145,10 @@ position = vp_metrics.rollup(summary, line_names)
 percent = position["percent"]
 status = vp_metrics.status_for(percent, position["spent"])
 
-prior = previous_semester(bundle.terms, semester)
-prior_totals = (
-    budget_domain.semester_totals(mine, bundle.terms, prior)
-    if prior
-    else {"income": 0.0, "expenses": 0.0, "net": 0.0, "count": 0}
-)
-trend = budget_domain.semester_totals_by_semester(mine, bundle.terms, semesters)
-spend_trend = [trend[name]["expenses"] for name in semesters]
-
 shell.metric_row(
     [
         {"label": "Budget", "value": position["budget"]},
-        {
-            "label": "Spent",
-            "value": position["spent"],
-            "delta": position["spent"] - prior_totals["expenses"],
-            "inverse": True,
-            "trend": spend_trend,
-            "color": theme.active().expense,
-        },
+        {"label": "Spent", "value": position["spent"]},
         {"label": "Remaining", "value": position["remaining"]},
         {
             "label": "Used",
@@ -180,18 +163,37 @@ st.markdown(
     shell.pill(status, status_style.get(status, "muted")),
     unsafe_allow_html=True,
 )
-if percent is not None:
-    st.progress(min(percent / 100, 1.0))
-
 # Pace: money used against the share of the term that has passed. Spending 60% of
 # a budget means something different in week 3 than in week 12.
 elapsed = vp_metrics.term_elapsed_percent(bundle.terms, semester)
+
+if percent is not None:
+    # A chunky bar with a visible track, not st.progress: that one is a thin line the
+    # same colour as the page's rules, so it read as a divider. The tick marks how far
+    # through the term we are, so "ahead of the tick" means spending faster than the clock.
+    palette = theme.active()
+    fill = palette.over if status == "over" else palette.ink
+    used = max(0.0, min(percent, 100.0))
+    tick = ""
+    if elapsed is not None and 0 < elapsed < 100:
+        tick = (
+            f'<div title="{elapsed:.0f}% of the term has passed" style="position:absolute;'
+            f"left:{elapsed:.1f}%;top:-4px;bottom:-4px;width:2px;background:{palette.ink_soft};"
+            f'border-radius:1px"></div>'
+        )
+    st.markdown(
+        f'<div role="progressbar" aria-valuemin="0" aria-valuemax="100" '
+        f'aria-valuenow="{percent:.0f}" aria-label="Share of budget used" '
+        f'style="position:relative;height:14px;margin:10px 0 14px;border-radius:999px;'
+        f'background:{palette.budget};box-shadow:inset 0 0 0 1px {palette.line_lit}">'
+        f'<div style="height:100%;width:{used:.1f}%;border-radius:999px;background:{fill}"></div>'
+        f"{tick}</div>",
+        unsafe_allow_html=True,
+    )
+
 pace = vp_metrics.pace_sentence(position, elapsed, semester)
 if pace:
     shell.say(pace, caption=True)
-
-if prior:
-    st.caption(f"Spending change compares against {prior}.")
 
 if status == "over":
     shell.notify(
@@ -332,20 +334,41 @@ past_terms = vp_history.same_point_in_past_terms(
     today=pd.Timestamp.today().normalize(),
 )
 if past_terms is not None:
-    st.markdown("**Compared with the same point in past terms**")
-    shell.say(vp_history.comparison_sentence(past_terms) or "")
-    shell.dataframe(
-        vp_history.display_frame(past_terms),
-        column_config={
-            "Spent by this point": st.column_config.NumberColumn(format="$%.2f"),
-            "Of its budget": st.column_config.NumberColumn(format="%.0f%%"),
-        },
+    usual = vp_history.compare_to_usual(past_terms)
+    tag = vp_history.VERDICT_TAGS.get(usual["verdict"]) if usual else None
+    kind = {"more": "approaching", "same": "on track", "less": "on track"}.get(usual["verdict"] if usual else "")
+    st.markdown(
+        "**This term vs. past terms**" + (f" &nbsp;{shell.pill(tag, kind)}" if tag else ""),
+        unsafe_allow_html=True,
+    )
+    sentence = vp_history.short_sentence(past_terms)
+    if sentence:
+        shell.say(sentence)
+    shell.chart(
+        committee_charts.same_point_bars(
+            vp_history.chart_frame(past_terms),
+            usual["typical"] if usual else None,
+            # The usual line is the same-season median, so say which season.
+            usual["label"].replace("past ", "usual for ").replace(" terms", "") if usual else "usual",
+        ),
+        key="committee_same_point",
     )
     st.caption(
-        f"\"Same point\" means {past_terms.elapsed_percent:.0f}% of the way through each "
-        f"term, as of {past_terms.as_of:%b} {past_terms.as_of.day} (the earlier of today "
-        "and the latest charge on record). Each term is measured against its own budget."
+        f"Each bar is how much of that term's budget was spent by the same point: "
+        f"{past_terms.elapsed_percent:.0f}% of the way through the term."
     )
+    with st.expander("See the numbers"):
+        shell.dataframe(
+            vp_history.display_frame(past_terms),
+            column_config={
+                "Spent by this point": st.column_config.NumberColumn(format="$%.2f"),
+                "Of its budget": st.column_config.NumberColumn(format="%.0f%%"),
+            },
+        )
+        st.caption(
+            f"Measured as of {past_terms.as_of:%b} {past_terms.as_of.day} (the earlier of today and "
+            "the latest charge on record). Each term is measured against its own budget."
+        )
 
 st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 
