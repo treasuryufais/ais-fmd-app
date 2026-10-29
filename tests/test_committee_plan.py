@@ -455,3 +455,13 @@ def test_the_page_says_so_when_plans_cannot_be_saved_yet(backend, monkeypatch):
     app = run_as(VIEWS / "MyPlan.py", OFFICER, CONSULTING)
     assert_clean(app, "My Plan without the tables")
     assert any("can't be saved" in str(i.value) for i in app.info)
+
+
+def test_last_seasons_spending_is_never_marked_over_next_terms_plan():
+    from ais_fmd.ui import plan_charts
+
+    sheet = pd.DataFrame({"Category": ["Misc."], "Planned": [0.0], "Last Spring": [165.0]})
+    figure = plan_charts.plan_vs_actual(sheet, actual="Last Spring", actual_label="Last Spring", flag_over=False)
+    assert [trace.name for trace in figure.data] == ["Planned", "Last Spring"]  # no "Over plan" trace
+    this_term = sheet.rename(columns={"Last Spring": "Spent"})
+    assert "Over plan" in [trace.name for trace in plan_charts.plan_vs_actual(this_term).data]

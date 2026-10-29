@@ -113,7 +113,7 @@ def _plan_editor(semester: str, saved: pd.DataFrame, sheet: pd.DataFrame, compar
     notes = dict(zip(saved["purpose"], saved["note"])) if not saved.empty else {}
     frame = pd.DataFrame({
         "purpose": sheet["Category"],
-        "amount": sheet["Planned"].where(sheet["Planned"] > 0),
+        "amount": sheet["Planned"],  # $0.00 for a category with spending but no plan, not "None"
         "compare": sheet[compare],
         "left": sheet["Planned"] - sheet[compare] if compare == "Spent" else None,
         "note": ["" if pd.isna(notes.get(c)) else str(notes.get(c)) for c in sheet["Category"]],
@@ -182,7 +182,11 @@ def _charts(sheet: pd.DataFrame, compare: str, label: str, key: str) -> None:
     bars, ring = st.columns([3, 2], gap="medium")
     with bars:
         st.markdown(f"**Planned vs {label.lower()}**")
-        shell.chart(plan_charts.plan_vs_actual(sheet, actual=compare, actual_label=label), key=f"{key}_bars")
+        shell.chart(
+            # Only this term's real spending can be "over plan"; last season's can't.
+            plan_charts.plan_vs_actual(sheet, actual=compare, actual_label=label, flag_over=compare == "Spent"),
+            key=f"{key}_bars",
+        )
     with ring:
         st.markdown("**Where the plan goes**")
         shell.chart(plan_charts.plan_donut(plan.donut_slices(sheet)), key=f"{key}_donut")

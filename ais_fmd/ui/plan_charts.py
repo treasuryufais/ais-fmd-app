@@ -15,18 +15,22 @@ import plotly.graph_objects as go
 from . import charts, theme
 
 
-def plan_vs_actual(sheet: pd.DataFrame, *, actual: str = "Spent", actual_label: str = "Spent") -> go.Figure:
+def plan_vs_actual(
+    sheet: pd.DataFrame, *, actual: str = "Spent", actual_label: str = "Spent", flag_over: bool = True
+) -> go.Figure:
     """
     One pair of horizontal bars per category: the plan, and what has actually
     gone out (this term's spending, or for next term what the same season cost).
     Planned is the quiet grey, actual the ink; an actual bar past its plan turns
     the over colour, and each bar carries its value, so nothing rests on colour.
+    `flag_over=False` for a comparison that can't be "over" a plan -- last
+    season's spending set against next term's plan.
     """
     if sheet is None or sheet.empty or not (sheet["Planned"].sum() or sheet[actual].sum()):
         return charts.empty_figure("Nothing planned or spent yet.")
     p = theme.active()
     rows = sheet.iloc[::-1]  # biggest plan at the top
-    over = rows[actual] > rows["Planned"]
+    over = (rows[actual] > rows["Planned"]) if flag_over else pd.Series(False, index=rows.index)
     figure = go.Figure()
     figure.add_trace(go.Bar(
         name="Planned", y=rows["Category"], x=rows["Planned"], orientation="h",
