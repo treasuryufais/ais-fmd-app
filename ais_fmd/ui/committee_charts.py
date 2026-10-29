@@ -99,3 +99,41 @@ def pace_chart(
         legend=dict(orientation="h", y=1.1, x=0),
     )
     return figure
+
+
+# --- My Committee: this term against past terms ---------------------------------
+
+
+def same_point_bars(frame: pd.DataFrame, typical: float | None, typical_label: str = "usual") -> go.Figure:
+    """
+    One horizontal bar per term: how much of that term's budget was spent by the
+    same point in the term. This term is the ink bar at the top, past terms the
+    quiet grey ones; each bar is labelled with its percentage, and a dashed line
+    marks what is usual, so the answer reads without the legend.
+    """
+    if frame is None or frame.empty:
+        return charts.empty_figure("Nothing to compare yet.")
+    p = theme.active()
+    rows = frame.iloc[::-1]  # this term at the top
+    labels = [f"{term} (now)" if now else term for term, now in zip(rows["Term"], rows["Now"])]
+    figure = go.Figure(go.Bar(
+        y=labels, x=rows["Used"], orientation="h",
+        marker=dict(color=[p.ink if now else p.line_edge for now in rows["Now"]]),
+        text=[f"{value:.0f}%" for value in rows["Used"]], textposition="outside", cliponaxis=False,
+        hovertemplate="<b>%{y}</b><br>%{x:.0f}% of its budget by this point<extra></extra>",
+        showlegend=False,
+    ))
+    top = max(float(rows["Used"].max()), float(typical or 0), 100.0)
+    if typical is not None:
+        figure.add_vline(
+            x=typical, line=dict(color=p.ink_soft, width=1.5, dash="dash"),
+            annotation_text=f"{typical_label} {typical:.0f}%", annotation_position="top",
+            annotation_font=dict(size=11, color=p.ink_soft),
+        )
+    figure.update_layout(
+        height=max(160, 44 * len(rows) + 60), bargap=0.45,
+        margin=dict(l=8, r=40, t=28, b=8),
+        xaxis=dict(range=[0, top * 1.12], ticksuffix="%", showgrid=True, zeroline=False),
+        yaxis=dict(title=None),
+    )
+    return figure
