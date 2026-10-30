@@ -52,11 +52,11 @@ def test_my_committee_compares_this_term_with_the_same_point_in_past_terms(seede
     assert_clean(app, "My Committee as the Consulting VP")
 
     assert any("This term vs. past terms" in block.value for block in app.markdown)
-    table = next(
-        (element.value for element in app.dataframe if "Of its budget" in element.value.columns), None
-    )
+    table = next((block.value for block in app.markdown if "ais-compare" in block.value), None)
     assert table is not None, "the comparison table was not drawn"
-    assert table["Term"].iloc[0] == "Fall 2026 (now)"
+    # This term is the first row, marked Now, ahead of the past terms.
+    assert table.index("Fall 2026") < table.index("Spring 2026")
+    assert "ais-chip-now" in table
     assert any("by the same point" in caption.value for caption in app.caption)
 
 

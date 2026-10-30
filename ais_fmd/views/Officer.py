@@ -38,7 +38,7 @@ from ais_fmd.domain.terms import (
     default_semester_index,
     ordered_semesters,
 )
-from ais_fmd.ui import charts, committee_charts, shell, theme
+from ais_fmd.ui import charts, committee_charts, committee_panels, shell, theme
 from ais_fmd.ui import flags as flag_ui
 
 identity = auth.require(auth.Role.OFFICER)
@@ -145,51 +145,39 @@ position = vp_metrics.rollup(summary, line_names)
 percent = position["percent"]
 status = vp_metrics.status_for(percent, position["spent"])
 
-shell.metric_row(
-    [
-        {"label": "Budget", "value": position["budget"]},
-        {"label": "Spent", "value": position["spent"]},
-        {"label": "Remaining", "value": position["remaining"]},
-        {
-            "label": "Used",
-            "value": "—" if percent is None else f"{percent:.0f}%",
-            "currency": False,
-        },
-    ]
-)
-
-status_style = {"over": "over", "approaching": "approaching", "on track": "on track"}
-st.markdown(
-    shell.pill(status, status_style.get(status, "muted")),
-    unsafe_allow_html=True,
-)
 # Pace: money used against the share of the term that has passed. Spending 60% of
 # a budget means something different in week 3 than in week 12.
 elapsed = vp_metrics.term_elapsed_percent(bundle.terms, semester)
 
-if percent is not None:
-    # A chunky bar with a visible track, not st.progress: that one is a thin line the
-    # same colour as the page's rules, so it read as a divider. The tick marks how far
-    # through the term we are, so "ahead of the tick" means spending faster than the clock.
-    palette = theme.active()
-    fill = palette.over if status == "over" else palette.ink
-    used = max(0.0, min(percent, 100.0))
-    tick = ""
-    if elapsed is not None and 0 < elapsed < 100:
-        tick = (
-            f'<div title="{elapsed:.0f}% of the term has passed" style="position:absolute;'
-            f"left:{elapsed:.1f}%;top:-4px;bottom:-4px;width:2px;background:{palette.ink_soft};"
-            f'border-radius:1px"></div>'
-        )
-    st.markdown(
-        f'<div role="progressbar" aria-valuemin="0" aria-valuemax="100" '
-        f'aria-valuenow="{percent:.0f}" aria-label="Share of budget used" '
-        f'style="position:relative;height:14px;margin:10px 0 14px;border-radius:999px;'
-        f'background:{palette.budget};box-shadow:inset 0 0 0 1px {palette.line_lit}">'
-        f'<div style="height:100%;width:{used:.1f}%;border-radius:999px;background:{fill}"></div>'
-        f"{tick}</div>",
-        unsafe_allow_html=True,
+# Spent, Remaining and Used take the status colour; Budget is the fixed reference
+# and stays neutral. Remaining goes to "over" on its own once it is negative.
+tone = committee_panels.tone_for(status)
+remaining_tone = "over" if position["remaining"] < 0 else tone
+
+tiles_column, bar_column = st.columns([3, 1.35], gap="medium")
+with tiles_column:
+    shell.metric_row(
+        [
+            {"label": "Budget", "value": position["budget"]},
+            # No change-vs-last-term arrow: VPs read a green down-arrow as
+            # "spending went down" (#9). The tile's colour carries the status.
+            {"label": "Spent", "value": position["spent"], "tone": tone},
+        ]
     )
+    shell.metric_row(
+        [
+            {"label": "Remaining", "value": position["remaining"], "tone": remaining_tone},
+            {
+                "label": "Used",
+                "value": "—" if percent is None else f"{percent:.0f}%",
+                "currency": False,
+                "tone": tone,
+            },
+        ]
+    )
+with bar_column:
+    with shell.card("spend-bar", order=2):
+        shell.html(committee_panels.spend_bar(position, status, elapsed))
 
 pace = vp_metrics.pace_sentence(position, elapsed, semester)
 if pace:
@@ -242,28 +230,56 @@ flag_ui.updates_panel(
 # --- Where the money went ----------------------------------------------------
 #
 # Sits directly under the headline numbers: the first question after "how much is
-# left" is "where did it go". The older per-line bullet chart and the by-purpose
-# bars were dropped from this page; the waterfall already shows the biggest
-# kinds of spending against the budget.
+# left" is "where did it go". A stacked Pareto by payee, with the spending pace
+# beside it. It replaced a by-purpose waterfall: every committee books under one
+# purpose, so that chart only ever had a single bar.
 
-st.subheader("Where the money went")
+flow_column, pace_column = st.columns(2, gap="large")
 
-expense_split = budget_domain.categorize_flow(scoped, budget_domain.EXPENSE)
+with flow_column:
+    st.subheader("Where the money went")
+    payees = vp_metrics.payee_split(scoped)
+    if payees.empty:
+        shell.empty_state("Nothing spent yet", f"No charges are booked to {chosen_name} in {semester}.")
+    else:
+        with shell.card("committee-pareto", order=3):
+            shell.html(
+                committee_panels.pareto(
+                    vp_metrics.pareto_rows(payees, position["budget"]),
+                    position["budget"],
+                    position["spent"],
+                )
+            )
+        shell.say(
+            "Your budget as one bar, split by who was paid, biggest first; the hatched "
+            "part is what is left. Running is the share of spending covered so far.",
+            caption=True,
+        )
+
+with pace_column:
+    st.subheader("Spending pace")
+    term_window = date_range_for_semester(bundle.terms, semester)
+    if term_window is None:
+        shell.empty_state("No term dates on record", f"{semester} has no start and end dates set.")
+    else:
+        term_start, term_end = term_window
+        spend_so_far = vp_metrics.cumulative_spend(scoped, term_start, term_end, freshness["through"])
+        pace_figure = committee_charts.pace_chart(
+            spend_so_far,
+            position["budget"],
+            term_start,
+            term_end,
+            today=pd.Timestamp.today().normalize(),
+        )
+        pace_figure.update_layout(height=360)
+        shell.chart(pace_figure, key="committee_pace")
+        shell.say(
+            "Solid: what you have spent. Dashed: an even spend across the term, so "
+            "above it means ahead of pace.",
+            caption=True,
+        )
+
 income_split = budget_domain.categorize_flow(scoped, budget_domain.INCOME)
-
-if expense_split.empty:
-    shell.empty_state("Nothing spent yet", f"No charges are booked to {chosen_name} in {semester}.")
-else:
-    labels, values, measures = vp_metrics.budget_flow(expense_split, position["budget"])
-    shell.chart(
-        charts.waterfall(labels, values, measures, title=f"{semester} budget flow"),
-        key="committee_flow",
-    )
-    shell.say(
-        "Your budget, less your five biggest kinds of spending; everything else is "
-        "grouped as Other. What is left is your remaining balance.",
-        caption=True,
-    )
 
 # A committee that owns several budget lines keeps a per-line breakdown. None do
 # today, so this is invisible until one does.
@@ -294,34 +310,6 @@ if not income_split.empty:
         key="committee_income_split",
     )
 
-st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
-
-# --- Spending pace -----------------------------------------------------------
-
-st.subheader("Spending pace")
-
-term_window = date_range_for_semester(bundle.terms, semester)
-if term_window is None:
-    shell.empty_state("No term dates on record", f"{semester} has no start and end dates set.")
-else:
-    term_start, term_end = term_window
-    spend_so_far = vp_metrics.cumulative_spend(scoped, term_start, term_end, freshness["through"])
-    shell.chart(
-        committee_charts.pace_chart(
-            spend_so_far,
-            position["budget"],
-            term_start,
-            term_end,
-            today=pd.Timestamp.today().normalize(),
-        ),
-        key="committee_pace",
-    )
-    shell.say(
-        "The solid line is what you have spent. The dashed line is where an even "
-        "spend across the term would be, so being above it means ahead of pace.",
-        caption=True,
-    )
-
 # Where this committee stood at the same point in earlier terms: the other half of
 # "is 95% spent unusual?". Shown only when there is something meaningful to say.
 past_terms = vp_history.same_point_in_past_terms(
@@ -334,6 +322,7 @@ past_terms = vp_history.same_point_in_past_terms(
     today=pd.Timestamp.today().normalize(),
 )
 if past_terms is not None:
+    st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
     usual = vp_history.compare_to_usual(past_terms)
     tag = vp_history.VERDICT_TAGS.get(usual["verdict"]) if usual else None
     kind = {"more": "approaching", "same": "on track", "less": "on track"}.get(usual["verdict"] if usual else "")
@@ -358,16 +347,12 @@ if past_terms is not None:
         f"{past_terms.elapsed_percent:.0f}% of the way through the term."
     )
     with st.expander("See the numbers"):
-        shell.dataframe(
-            vp_history.display_frame(past_terms),
-            column_config={
-                "Spent by this point": st.column_config.NumberColumn(format="$%.2f"),
-                "Of its budget": st.column_config.NumberColumn(format="%.0f%%"),
-            },
-        )
+        with shell.card("committee-compare", order=4):
+            shell.html(committee_panels.comparison_table(past_terms, status))
         st.caption(
             f"Measured as of {past_terms.as_of:%b} {past_terms.as_of.day} (the earlier of today and "
-            "the latest charge on record). Each term is measured against its own budget."
+            "the latest charge on record). Each term is measured against its own budget. "
+            "The black mark on each bar is where this term is now."
         )
 
 st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
