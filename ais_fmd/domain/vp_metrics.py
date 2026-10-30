@@ -9,9 +9,12 @@ values -- no Streamlit import, so it can be tested without a browser.
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 
 from . import budgets as budget_domain
+from .categorize.merchants import merchant_key
 from .money import safe_percent
 from .terms import date_range_for_semester
 
@@ -253,3 +256,78 @@ def pace_sentence(position: dict, elapsed: float | None, semester: str) -> str |
             )
         )
     return text
+
+
+# --- Where the money went, by payee -------------------------------------------
+#
+# Every committee books its charges under one purpose (Meeting Food's purpose is
+# "Meeting Food"), so grouping by purpose always drew a single bar. Grouping by
+# who was paid is what actually answers "where did it go".
+
+_ZELLE_TO = re.compile(r"^\s*zelle\s+to\s+(.+?)\s+on\s+\d", re.I)
+# Location words the merchant key keeps but a reader does not need.
+_PLACE_WORDS = frozenset({"gainesville", "fl"})
+
+
+def payee_label(details: object) -> str:
+    """'PURCHASE AUTHORIZED ON 09/03 PANDA EXPRESS 2201 GAINESVILLE FL ...' -> 'Panda Express'."""
+    text = " ".join(str(details or "").split())
+    match = _ZELLE_TO.match(text)
+    if match:
+        return f"Zelle to {match.group(1).title()}"
+    key = merchant_key(text)
+    if not key:
+        return "Other payees"
+    tokens = [token for token in key.split() if token not in _PLACE_WORDS] or key.split()
+    return " ".join(tokens).title()
+
+
+def payee_split(df: pd.DataFrame) -> pd.DataFrame:
+    """Money spent per payee, largest first. Same Category/Amount shape as `categorize_flow`."""
+    columns = ["Category", "Amount"]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+    if "budget_category" in df.columns:
+        df = df[~budget_domain.is_transfer(df)]
+    expenses = df[df["amount"] < 0]
+    if expenses.empty:
+        return pd.DataFrame(columns=columns)
+    grouped = pd.DataFrame(
+        {"Category": expenses["details"].map(payee_label), "Amount": expenses["amount"].abs()}
+    )
+    return (
+        grouped.groupby("Category", as_index=False)["Amount"]
+        .sum()
+        .sort_values("Amount", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
+def pareto_rows(split: pd.DataFrame, budget: float, *, itemised: int = 5) -> list[dict]:
+    """
+    The biggest payees in order, each with its share of the spending, the running
+    share (the Pareto line), and its share of the budget. Anything past `itemised`
+    is one "Other" row, so the rows always add up to the real total spent.
+    """
+    if split.empty:
+        return []
+    total = float(split["Amount"].sum())
+    top = split.head(itemised)
+    items = list(zip(top["Category"], top["Amount"].astype(float)))
+    other = total - float(top["Amount"].sum())
+    if round(other, 2) > 0:
+        items.append(("Other", other))
+
+    rows, running = [], 0.0
+    for label, amount in items:
+        running += amount
+        rows.append(
+            {
+                "label": label,
+                "amount": amount,
+                "share": safe_percent(amount, total),
+                "cumulative": safe_percent(running, total),
+                "of_budget": safe_percent(amount, budget),
+            }
+        )
+    return rows

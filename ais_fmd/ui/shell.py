@@ -208,6 +208,7 @@ def pill(label: str, kind: str = "muted") -> str:
         "over": "ais-over",
         "approaching": "ais-approaching",
         "on track": "ais-ontrack",
+        "warn": "ais-warn",
     }
     css = mapping.get(kind, "ais-muted")
     return f'<span class="ais-pill {css}">{label}</span>'
@@ -224,9 +225,12 @@ def metric(
     trend: list[float] | None = None,
     color: str | None = None,
     bars: list[float] | None = None,
+    tone: str | None = None,
 ) -> None:
     """
     One KPI.
+
+    `tone` ("ok", "warn", "over") tints the tile and colours its value by status.
 
     FINDING F14: the delta is preformatted, so it no longer renders as a bare
     1234.56 beneath a value formatted as $1,234.56.
@@ -245,6 +249,10 @@ def metric(
     # A string is already formatted -- a percentage, a ratio, a count with a
     # unit. Passing one through `f"{value:,}"` raises, so a caller with anything
     # that is not a bare number had no way to use this at all.
+    if tone:
+        slug = "".join(ch if ch.isalnum() else "-" for ch in label.lower())
+        container = container.container(key=f"tone-{tone}-{slug}")
+
     if currency:
         display_value = format_currency(value)
     elif isinstance(value, str):
@@ -303,6 +311,7 @@ def metric_row(specs: Iterable[dict]) -> None:
             trend=spec.get("trend"),
             color=spec.get("color"),
             bars=spec.get("bars"),
+            tone=spec.get("tone"),
         )
 
 
