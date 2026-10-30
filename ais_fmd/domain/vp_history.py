@@ -155,9 +155,11 @@ def same_point_in_past_terms(
     )
 
 
-def comparison_sentence(comparison: PastComparison | None) -> str | None:
+def compare_to_usual(comparison: PastComparison | None) -> dict | None:
     """
-    One plain sentence: what is usual for this point, and how this term compares.
+    How this term compares with what is usual for this point: the usual figure
+    (the median of the pool), this term's, the pool's label, and a verdict --
+    "more", "same" or "less" (within `SIMILAR_WITHIN` points counts as the same).
 
     Prefers terms in the same season, since Fall and Spring behave differently,
     and falls back to every past term when there is no earlier one in the season.
@@ -178,17 +180,53 @@ def comparison_sentence(comparison: PastComparison | None) -> str | None:
     typical = float(values.median())
     current = float(comparison.current_percent)
     gap = current - typical
-    if abs(gap) <= SIMILAR_WITHIN:
-        relation = "about the same as usual"
-    elif gap > 0:
-        relation = "more than usual for this point"
-    else:
-        relation = "less than usual for this point"
+    verdict = "same" if abs(gap) <= SIMILAR_WITHIN else ("more" if gap > 0 else "less")
+    return {"typical": typical, "current": current, "label": label, "verdict": verdict}
 
+
+VERDICT_TAGS = {"more": "More than usual", "same": "About usual", "less": "Less than usual"}
+
+
+def comparison_sentence(comparison: PastComparison | None) -> str | None:
+    """One plain sentence: what is usual for this point, and how this term compares."""
+    usual = compare_to_usual(comparison)
+    if usual is None:
+        return None
+    relation = {
+        "same": "about the same as usual",
+        "more": "more than usual for this point",
+        "less": "less than usual for this point",
+    }[usual["verdict"]]
     return (
-        f"At this point in {label} your committee had typically spent about "
-        f"{typical:.0f}% of its budget. You are at {current:.0f}%, which is {relation}."
+        f"At this point in {usual['label']} your committee had typically spent about "
+        f"{usual['typical']:.0f}% of its budget. You are at {usual['current']:.0f}%, which is {relation}."
     )
+
+
+def short_sentence(comparison: PastComparison | None) -> str | None:
+    """The headline under the tag: two short facts, no judgement words."""
+    usual = compare_to_usual(comparison)
+    if usual is None:
+        return None
+    return (
+        f"{usual['current']:.0f}% of your budget is used. By this point, "
+        f"{usual['label']} had used about {usual['typical']:.0f}%."
+    )
+
+
+def chart_frame(comparison: PastComparison) -> pd.DataFrame:
+    """
+    Term | Used | Now for the bar chart: this term first, then past terms, most
+    recent first. Terms with no budget (no percentage) are left out of the chart;
+    they are still in the numbers table.
+    """
+    rows = [{"Term": comparison.semester, "Used": comparison.current_percent, "Now": True}]
+    rows += [
+        {"Term": row["Semester"], "Used": row["Of its budget"], "Now": False}
+        for _, row in comparison.table.iterrows()
+    ]
+    frame = pd.DataFrame(rows, columns=["Term", "Used", "Now"])
+    return frame[frame["Used"].notna()].reset_index(drop=True)
 
 
 def display_frame(comparison: PastComparison) -> pd.DataFrame:

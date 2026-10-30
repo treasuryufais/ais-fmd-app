@@ -51,13 +51,13 @@ def test_my_committee_compares_this_term_with_the_same_point_in_past_terms(seede
     app = run_as(VIEWS / "Officer.py", OFFICER, 7)
     assert_clean(app, "My Committee as the Consulting VP")
 
-    assert any("Compared with the same point in past terms" in block.value for block in app.markdown)
-    table = next(
-        (element.value for element in app.dataframe if "Of its budget" in element.value.columns), None
-    )
+    assert any("This term vs. past terms" in block.value for block in app.markdown)
+    table = next((block.value for block in app.markdown if "ais-compare" in block.value), None)
     assert table is not None, "the comparison table was not drawn"
-    assert table["Term"].iloc[0] == "Fall 2026 (now)"
-    assert any("Same point" in caption.value for caption in app.caption)
+    # This term is the first row, marked Now, ahead of the past terms.
+    assert table.index("Fall 2026") < table.index("Spring 2026")
+    assert "ais-chip-now" in table
+    assert any("by the same point" in caption.value for caption in app.caption)
 
 
 def test_the_section_stays_quiet_when_it_is_too_early_in_the_term(seeded_db, use_db, monkeypatch):
@@ -71,4 +71,4 @@ def test_the_section_stays_quiet_when_it_is_too_early_in_the_term(seeded_db, use
     )
     app = run_as(VIEWS / "Officer.py", OFFICER, 7)
     assert_clean(app, "My Committee early in the term")
-    assert not any("Compared with the same point" in block.value for block in app.markdown)
+    assert not any("This term vs. past terms" in block.value for block in app.markdown)
