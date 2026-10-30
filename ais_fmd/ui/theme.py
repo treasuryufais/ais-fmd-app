@@ -37,6 +37,8 @@ ACCENT_TINT = "#FFE9E0"
 
 POSITIVE = "#157F46"        # delta pills only
 POSITIVE_TINT = "#E3F3EA"
+WARNING = "#A15C07"         # approaching: amber, so it reads apart from "over"
+WARNING_TINT = "#FDF0D8"
 
 # Semantic -- these encode meaning, not brand.
 INCOME = "#111111"
@@ -286,6 +288,68 @@ APP_CSS = f"""
   .stTabs [data-baseweb="tab"] {{ border-radius: 999px; padding: 6px 16px; height: auto; }}
   .stTabs [aria-selected="true"] {{ background: {CARD}; box-shadow: 0 1px 3px rgba(17,17,17,.10); }}
   .stTabs [data-baseweb="tab-highlight"], .stTabs [data-baseweb="tab-border"] {{ display: none; }}
+
+  /* Status-toned KPI tiles (My Committee): the value and a wash take the
+     status colour, so on track / approaching / over read at a glance. */
+  [class*="st-key-tone-ok-"] [data-testid="stMetric"] {{ background: {POSITIVE_TINT}; }}
+  [class*="st-key-tone-ok-"] [data-testid="stMetricValue"] {{ color: {POSITIVE}; }}
+  [class*="st-key-tone-warn-"] [data-testid="stMetric"] {{ background: {WARNING_TINT}; }}
+  [class*="st-key-tone-warn-"] [data-testid="stMetricValue"] {{ color: {WARNING}; }}
+  [class*="st-key-tone-over-"] [data-testid="stMetric"] {{ background: {ACCENT_TINT}; }}
+  [class*="st-key-tone-over-"] [data-testid="stMetricValue"] {{ color: {ACCENT_DIM}; }}
+  .ais-warn {{ background: {WARNING_TINT}; color: {WARNING}; }}
+
+  /* Vertical spend bar beside the KPI tiles. */
+  .ais-vbar {{ display: flex; gap: 18px; align-items: stretch; min-height: 196px; }}
+  .ais-vbar-track {{
+    position: relative; width: 46px; flex: none; border-radius: 14px;
+    background: {SUBTLE}; box-shadow: inset 0 0 0 1px {GRID}; overflow: visible;
+  }}
+  .ais-vbar-fill {{ position: absolute; left: 0; right: 0; bottom: 0; border-radius: 14px; }}
+  .ais-vbar-pace {{ position: absolute; left: -6px; right: -6px; border-top: 2px dashed {INK}; }}
+  .ais-vbar-text {{ display: flex; flex-direction: column; justify-content: center; gap: 2px; }}
+  .ais-vbar-pct {{ font-size: 40px; font-weight: 700; letter-spacing: -.04em; line-height: 1.05; margin-top: 8px; }}
+  .ais-vbar-label {{ font-size: 13.5px; color: {INK_SOFT}; }}
+  .ais-vbar-money {{ font-size: 14.5px; color: {INK}; margin-top: 8px; font-variant-numeric: tabular-nums; }}
+  .ais-vbar-term {{ font-size: 12.5px; color: {INK_MUTE}; margin-top: 4px; }}
+  .ais-tone-ok .ais-vbar-fill {{ background: {POSITIVE}; }}   .ais-tone-ok .ais-vbar-pct {{ color: {POSITIVE}; }}
+  .ais-tone-warn .ais-vbar-fill {{ background: {WARNING}; }}  .ais-tone-warn .ais-vbar-pct {{ color: {WARNING}; }}
+  .ais-tone-over .ais-vbar-fill {{ background: {ACCENT}; }}   .ais-tone-over .ais-vbar-pct {{ color: {ACCENT_DIM}; }}
+  .ais-tone-muted .ais-vbar-fill {{ background: {INK_MUTE}; }}
+
+  /* Stacked Pareto: one bar across the budget, biggest payee first. */
+  .ais-stack {{ position: relative; display: flex; height: 34px; border-radius: 10px; overflow: hidden; background: {SUBTLE}; }}
+  .ais-stack span {{ display: block; height: 100%; border-right: 2px solid {CARD}; }}
+  .ais-stack .ais-stack-rest {{
+    background: repeating-linear-gradient(135deg, {SUBTLE} 0 6px, {BUDGET} 6px 12px); border-right: 0;
+  }}
+  .ais-stack-mark {{ position: absolute; top: -4px; bottom: -4px; border-left: 2px solid {ACCENT}; }}
+  .ais-stack-scale {{ display: flex; justify-content: space-between; font-size: 12px; color: {INK_MUTE}; margin: 6px 0 14px; }}
+
+  /* Readable tables drawn as HTML (Pareto list, past-term comparison). */
+  table.ais-table {{ width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }}
+  table.ais-table th {{
+    text-align: left; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    color: {INK_MUTE}; padding: 0 10px 8px; border-bottom: 1px solid {GRID};
+  }}
+  table.ais-table td {{ padding: 9px 10px; border-bottom: 1px solid {GRID}; color: {INK}; vertical-align: middle; }}
+  table.ais-table tr:last-child td {{ border-bottom: 0; }}
+  table.ais-table .num {{ text-align: right; white-space: nowrap; }}
+  table.ais-table .muted {{ color: {INK_MUTE}; }}
+  table.ais-table tr.ais-now td {{ background: {SUBTLE}; font-weight: 600; }}
+  table.ais-table tr.ais-now td:first-child {{ border-radius: 10px 0 0 10px; }}
+  table.ais-table tr.ais-now td:last-child {{ border-radius: 0 10px 10px 0; }}
+  .ais-swatch {{ width: 10px; height: 10px; border-radius: 3px; display: inline-block; }}
+  .ais-chip {{
+    display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; background: {SUBTLE}; color: {INK_SOFT}; vertical-align: 1px;
+  }}
+  .ais-chip-now {{ background: {INK}; color: #fff; }}
+  .ais-meter {{ display: flex; align-items: center; gap: 10px; min-width: 170px; }}
+  .ais-meter-track {{ position: relative; flex: 1; height: 10px; border-radius: 999px; background: {SUBTLE}; box-shadow: inset 0 0 0 1px {GRID}; }}
+  .ais-meter-fill {{ position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: {EXPENSE}; }}
+  .ais-meter-mark {{ position: absolute; top: -4px; bottom: -4px; border-left: 2px solid {INK}; }}
+  .ais-meter-value {{ width: 42px; text-align: right; }}
 
   /* Tables, expanders */
   [data-testid="stDataFrame"] {{ border-radius: 16px; overflow: hidden; }}

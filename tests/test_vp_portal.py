@@ -456,3 +456,51 @@ def test_my_committee_renders_for_every_committee(committee_id, seeded_db, use_d
     use_db(seeded_db)
     app = run_as(VIEWS / "Officer.py", OFFICER, committee_id)
     assert_clean(app, f"My Committee as the {committee_name(committee_id)} VP")
+
+
+def test_payee_label_reduces_a_bank_line_to_who_was_paid():
+    assert vp_metrics.payee_label(
+        "PURCHASE AUTHORIZED ON 09/03 PANDA EXPRESS 2201 GAINESVILLE FL S969730"
+    ) == "Panda Express"
+    assert vp_metrics.payee_label(
+        "ZELLE TO  JANE DOE ON 08/21 REF # WFCT22KG9MGT GBM #1 MEETING FOOD"
+    ) == "Zelle to Jane Doe"
+    assert vp_metrics.payee_label("") == "Other payees"
+
+
+def test_payee_split_counts_only_spending_largest_first():
+    df = pd.DataFrame(
+        {
+            "details": [
+                "PURCHASE AUTHORIZED ON 09/03 CHIPOTLE 1462 GAINESVILLE FL S1",
+                "PURCHASE AUTHORIZED ON 09/10 CHIPOTLE 1463 GAINESVILLE FL S2",
+                "PURCHASE AUTHORIZED ON 09/17 PUBLIX SUPER MAR GAINESVILLE FL S3",
+                "DEPOSIT FROM SPONSOR",
+            ],
+            "amount": [-30.0, -20.0, -40.0, 500.0],
+        }
+    )
+    split = vp_metrics.payee_split(df)
+    assert split["Category"].tolist() == ["Chipotle", "Publix Super Mar"]
+    assert split["Amount"].tolist() == [50.0, 40.0]
+
+
+def test_pareto_rows_run_to_the_whole_of_spending():
+    split = pd.DataFrame(
+        {"Category": list("ABCDEFG"), "Amount": [70.0, 60.0, 50.0, 40.0, 30.0, 20.0, 10.0]}
+    )
+    rows = vp_metrics.pareto_rows(split, 1000.0)
+    assert [row["label"] for row in rows] == ["A", "B", "C", "D", "E", "Other"]
+    assert rows[-1]["amount"] == pytest.approx(30.0)  # F + G
+    assert rows[-1]["cumulative"] == pytest.approx(100.0)
+    assert rows[0]["share"] == pytest.approx(25.0)  # 70 of 280
+    assert rows[0]["of_budget"] == pytest.approx(7.0)
+
+
+def test_my_committee_draws_the_spend_bar_and_pareto(seeded_db, use_db):
+    use_db(seeded_db)
+    app = run_as(VIEWS / "Officer.py", OFFICER, 8)
+    assert_clean(app, "My Committee as the Meeting Food VP")
+    html = " ".join(block.value for block in app.markdown)
+    assert "ais-vbar" in html and "of the budget spent" in html
+    assert "ais-stack" in html and "Paid to" in html
