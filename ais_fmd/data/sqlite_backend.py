@@ -286,6 +286,35 @@ CREATE TABLE IF NOT EXISTS profiles (
     created_at   TEXT DEFAULT CURRENT_TIMESTAMP,
     created_by   TEXT
 );
+
+-- A VP's budget plan (`domain/committee_plan.py`): one line per category (a
+-- purpose) and an amount. Keyed by the semester's *name*, not its TermID,
+-- because a VP plans for next term before the treasurer has set it up. A plan
+-- is an estimate: it never books, moves or reserves money.
+CREATE TABLE IF NOT EXISTS committee_plan_lines (
+    line_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    committee_id INTEGER NOT NULL,
+    semester     TEXT NOT NULL,
+    purpose      TEXT NOT NULL,
+    amount       REAL NOT NULL,
+    note         TEXT,
+    updated_by   TEXT,
+    updated_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (committee_id, semester, purpose)
+);
+
+-- One budget request per committee and semester; sending again replaces it.
+-- A message to the treasurer, who still sets every budget.
+CREATE TABLE IF NOT EXISTS budget_requests (
+    request_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    committee_id INTEGER NOT NULL,
+    semester     TEXT NOT NULL,
+    amount       REAL NOT NULL,
+    reason       TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (committee_id, semester)
+);
 """
 
 
@@ -686,6 +715,128 @@ class SqliteBackend(Backend):
                     field=f"flag {flag_id}",
                     old_value=flags_domain.OPEN,
                     new_value=status,
+                )
+                connection.commit()
+                result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    # --- Committee plans and budget requests ----------------------------------
+
+    def _scoped_read(
+        self, table: str, committee_ids: tuple[int, ...] | None, semester: str | None, order: str
+    ) -> pd.DataFrame:
+        clauses, params = [], []
+        if committee_ids is not None:
+            ids = [int(committee_id) for committee_id in committee_ids]
+            if not ids:
+                return self._read(f"SELECT * FROM {table} WHERE 0")
+            clauses.append(f"committee_id IN ({','.join('?' for _ in ids)})")
+            params.extend(ids)
+        if semester is not None:
+            clauses.append("semester = ?")
+            params.append(semester)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return self._read(f"SELECT * FROM {table} {where} ORDER BY {order}", tuple(params))
+
+    def fetch_plan_lines(
+        self, committee_ids: tuple[int, ...] | None = None, semester: str | None = None
+    ) -> pd.DataFrame:
+        return self._scoped_read(
+            "committee_plan_lines", committee_ids, semester, "committee_id, amount DESC, purpose"
+        )
+
+    def replace_plan_lines(
+        self,
+        committee_id: int,
+        semester: str,
+        lines: list[dict],
+        allowed_committee_ids: tuple[int, ...],
+        actor: str,
+    ) -> UpdateResult:
+        """The page has already cleaned `lines` (`committee_plan.clean_lines`)."""
+        result = UpdateResult()
+        if int(committee_id) not in {int(i) for i in allowed_committee_ids}:
+            result.error = "You can only plan for your own committee."
+            return result
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN")
+                before = connection.execute(
+                    "SELECT COUNT(*) FROM committee_plan_lines WHERE committee_id = ? AND semester = ?",
+                    (int(committee_id), semester),
+                ).fetchone()[0]
+                connection.execute(
+                    "DELETE FROM committee_plan_lines WHERE committee_id = ? AND semester = ?",
+                    (int(committee_id), semester),
+                )
+                for line in lines:
+                    connection.execute(
+                        "INSERT INTO committee_plan_lines (committee_id, semester, purpose, amount, "
+                        "note, updated_by) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            int(committee_id), semester, line["purpose"], float(line["amount"]),
+                            line.get("note"), actor,
+                        ),
+                    )
+                self._audit(
+                    connection,
+                    transaction_id=None,
+                    action="plan",
+                    actor=actor,
+                    field=f"committee {int(committee_id)} / {semester}",
+                    old_value=f"{before} line(s)",
+                    new_value=f"{len(lines)} line(s)",
+                )
+                connection.commit()
+                result.updated = len(lines) or 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def fetch_budget_requests(
+        self, committee_ids: tuple[int, ...] | None = None, semester: str | None = None
+    ) -> pd.DataFrame:
+        return self._scoped_read(
+            "budget_requests", committee_ids, semester, "semester, committee_id"
+        )
+
+    def save_budget_request(
+        self,
+        committee_id: int,
+        semester: str,
+        amount: float,
+        reason: str,
+        allowed_committee_ids: tuple[int, ...],
+        actor: str,
+    ) -> UpdateResult:
+        result = UpdateResult()
+        if int(committee_id) not in {int(i) for i in allowed_committee_ids}:
+            result.error = "You can only send a request for your own committee."
+            return result
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN")
+                previous = connection.execute(
+                    "SELECT amount FROM budget_requests WHERE committee_id = ? AND semester = ?",
+                    (int(committee_id), semester),
+                ).fetchone()
+                connection.execute(
+                    "INSERT INTO budget_requests (committee_id, semester, amount, reason, requested_by) "
+                    "VALUES (?, ?, ?, ?, ?) ON CONFLICT (committee_id, semester) DO UPDATE SET "
+                    "amount = excluded.amount, reason = excluded.reason, "
+                    "requested_by = excluded.requested_by, requested_at = CURRENT_TIMESTAMP",
+                    (int(committee_id), semester, float(amount), reason, actor),
+                )
+                self._audit(
+                    connection,
+                    transaction_id=None,
+                    action="budget request",
+                    actor=actor,
+                    field=f"committee {int(committee_id)} / {semester}",
+                    old_value=None if previous is None else previous["amount"],
+                    new_value=float(amount),
                 )
                 connection.commit()
                 result.updated = 1
@@ -1463,6 +1614,7 @@ class SqliteBackend(Backend):
         """Drop everything and rebuild. Sandbox convenience, no production analogue."""
         with self._connect() as connection:
             tables = [
+                "committee_plan_lines", "budget_requests",
                 "transaction_flags",  # before transactions, which it references
                 "receipts", "reimbursements", "transaction_audit", "statement_balances",
                 "merchants", "uploaded_files", "transactions", "committeebudgets",
@@ -1522,6 +1674,14 @@ def _columns_for(query: str) -> list[str]:
         "statement_balances": [
             "id", "account", "period_start", "period_end",
             "opening_balance", "closing_balance", "source_file", "recorded_at",
+        ],
+        "committee_plan_lines": [
+            "line_id", "committee_id", "semester", "purpose", "amount", "note",
+            "updated_by", "updated_at",
+        ],
+        "budget_requests": [
+            "request_id", "committee_id", "semester", "amount", "reason",
+            "requested_by", "requested_at",
         ],
     }
     lowered = query.lower()

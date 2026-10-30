@@ -383,6 +383,50 @@ class Backend(ABC):
             )
         return result
 
+    # --- Committee plans and budget requests ----------------------------------
+    #
+    # A VP's own estimate of what they will spend, and what they would like next
+    # term. Neither books, moves or reserves money; the treasurer sets budgets.
+    # Reads raise where the backend cannot store plans, so pages hide the feature.
+
+    def fetch_plan_lines(
+        self, committee_ids: tuple[int, ...] | None = None, semester: str | None = None
+    ) -> pd.DataFrame:
+        """Plan lines (category and amount), optionally only these committees' and one semester's."""
+        raise NotImplementedError(f"{self.name} does not store committee plans yet.")
+
+    def replace_plan_lines(
+        self,
+        committee_id: int,
+        semester: str,
+        lines: list[dict],
+        allowed_committee_ids: tuple[int, ...],
+        actor: str,
+    ) -> UpdateResult:
+        """
+        Make `lines` the committee's whole plan for `semester`. Refused unless
+        `committee_id` is one of `allowed_committee_ids`, the caller's own lines.
+        """
+        return self._unsupported("Saving a committee plan")
+
+    def fetch_budget_requests(
+        self, committee_ids: tuple[int, ...] | None = None, semester: str | None = None
+    ) -> pd.DataFrame:
+        """Budget requests, optionally only these committees' and one semester's."""
+        raise NotImplementedError(f"{self.name} does not store budget requests yet.")
+
+    def save_budget_request(
+        self,
+        committee_id: int,
+        semester: str,
+        amount: float,
+        reason: str,
+        allowed_committee_ids: tuple[int, ...],
+        actor: str,
+    ) -> UpdateResult:
+        """One request per committee and semester; sending again replaces it."""
+        return self._unsupported("Sending a budget request")
+
 
 def get_backend() -> Backend:
     """

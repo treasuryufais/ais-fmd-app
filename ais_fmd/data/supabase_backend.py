@@ -906,6 +906,132 @@ class SupabaseBackend(Backend):
             result.error = f"{type(exc).__name__}: {exc}"
         return result
 
+    # --- Committee plans and budget requests (migration 014) -------------------
+
+    def _scoped(self, table: str, committee_ids: tuple[int, ...] | None, semester: str | None):
+        query = self._admin.table(table).select("*")
+        if committee_ids is not None:
+            query = query.in_("committee_id", [int(i) for i in committee_ids])
+        if semester is not None:
+            query = query.eq("semester", semester)
+        return query
+
+    def fetch_plan_lines(
+        self, committee_ids: tuple[int, ...] | None = None, semester: str | None = None
+    ) -> pd.DataFrame:
+        if committee_ids is not None and not committee_ids:
+            return pd.DataFrame()
+        frame = pd.DataFrame(
+            self._scoped("committee_plan_lines", committee_ids, semester).execute().data or []
+        )
+        if frame.empty:
+            return frame
+        # Biggest planned amount first -- matching sqlite_backend.py.
+        frame["amount"] = pd.to_numeric(frame["amount"], errors="coerce")
+        return frame.sort_values(
+            ["committee_id", "amount", "purpose"], ascending=[True, False, True], kind="stable"
+        ).reset_index(drop=True)
+
+    def replace_plan_lines(
+        self,
+        committee_id: int,
+        semester: str,
+        lines: list[dict],
+        allowed_committee_ids: tuple[int, ...],
+        actor: str,
+    ) -> UpdateResult:
+        """
+        Delete the old plan, then insert the new one. Not atomic: if the insert
+        fails the VP is told and the plan is empty until they save again. The
+        unique (committee, semester, purpose) key would refuse an insert-first
+        order, which would briefly need two copies of a line.
+        """
+        result = UpdateResult()
+        if int(committee_id) not in {int(i) for i in allowed_committee_ids}:
+            result.error = "You can only plan for your own committee."
+            return result
+        try:
+            old = (
+                self._admin.table("committee_plan_lines").select("line_id")
+                .eq("committee_id", int(committee_id)).eq("semester", semester).execute()
+            )
+            old_ids = [row["line_id"] for row in (old.data or [])]
+            if old_ids:
+                self._admin.table("committee_plan_lines").delete().in_("line_id", old_ids).execute()
+            if lines:
+                self._admin.table("committee_plan_lines").insert([
+                    {
+                        "committee_id": int(committee_id),
+                        "semester": semester,
+                        "purpose": line["purpose"],
+                        "amount": float(line["amount"]),
+                        "note": line.get("note"),
+                        "updated_by": actor,
+                    }
+                    for line in lines
+                ]).execute()
+            self._audit(
+                transaction_id=None,
+                action="plan",
+                actor=actor,
+                field=f"committee {int(committee_id)} / {semester}",
+                old_value=f"{len(old_ids)} line(s)",
+                new_value=f"{len(lines)} line(s)",
+            )
+            result.updated = len(lines) or 1
+        except Exception as exc:  # noqa: BLE001
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def fetch_budget_requests(
+        self, committee_ids: tuple[int, ...] | None = None, semester: str | None = None
+    ) -> pd.DataFrame:
+        if committee_ids is not None and not committee_ids:
+            return pd.DataFrame()
+        frame = pd.DataFrame(
+            self._scoped("budget_requests", committee_ids, semester).execute().data or []
+        )
+        if frame.empty:
+            return frame
+        return frame.sort_values(["semester", "committee_id"], kind="stable").reset_index(drop=True)
+
+    def save_budget_request(
+        self,
+        committee_id: int,
+        semester: str,
+        amount: float,
+        reason: str,
+        allowed_committee_ids: tuple[int, ...],
+        actor: str,
+    ) -> UpdateResult:
+        result = UpdateResult()
+        if int(committee_id) not in {int(i) for i in allowed_committee_ids}:
+            result.error = "You can only send a request for your own committee."
+            return result
+        try:
+            self._admin.table("budget_requests").upsert(
+                {
+                    "committee_id": int(committee_id),
+                    "semester": semester,
+                    "amount": float(amount),
+                    "reason": reason,
+                    "requested_by": actor,
+                    "requested_at": datetime.now(timezone.utc).isoformat(),
+                },
+                on_conflict="committee_id,semester",
+            ).execute()
+            self._audit(
+                transaction_id=None,
+                action="budget request",
+                actor=actor,
+                field=f"committee {int(committee_id)} / {semester}",
+                new_value=str(float(amount)),
+            )
+            result.updated = 1
+        except Exception as exc:  # noqa: BLE001
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
     # --- writes (pre-existing) -------------------------------------------------
 
     def insert_transactions(

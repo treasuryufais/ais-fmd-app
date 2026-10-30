@@ -1,9 +1,9 @@
 """
 Which pages a signed-in person can navigate to.
 
-A VP (an Officer, see `Identity.committee_scoped`) gets three pages: their own
-committee's dashboard, their own committee's transactions, and the Assistant
-(see the note on `VP_PAGES`). Everything else -- including Home and other pages
+A VP (an Officer, see `Identity.committee_scoped`) gets four pages: their own
+committee's dashboard, their own committee's transactions, their own committee's
+plan, and the Assistant (see the note on `VP_PAGES`). Everything else -- including Home and other pages
 that are open to any role, like the org-wide Dashboard and Transactions, all of
 which show every committee -- is left out of their navigation, and Streamlit only serves pages
 that are in the navigation, so a page that is not listed cannot be reached by
@@ -27,6 +27,7 @@ VP_PAGES: list[tuple[str, str, str, Role]] = [
     # Committee is first, so it is where a VP lands after signing in.
     ("ais_fmd/views/Officer.py", "My Committee", ":material/badge:", Role.OFFICER),
     ("ais_fmd/views/MyTransactions.py", "My Transactions", ":material/table_rows:", Role.OFFICER),
+    ("ais_fmd/views/MyPlan.py", "My Plan", ":material/event_note:", Role.OFFICER),
     # Under My Transactions, as asked. Unlike the two pages above, the Assistant is the
     # shared page, so the scoping is not done here: `assistant.visible_to_asker` gives a
     # VP's tools only their own committee's rows, and `run_tool` refuses questions that
