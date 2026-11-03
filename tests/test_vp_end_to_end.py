@@ -311,7 +311,7 @@ def test_my_committee_shows_the_past_term_comparison_for_every_committee(line, d
     _pin_the_clock(monkeypatch)
     app = run_as(VIEWS / "Officer.py", OFFICER, line)
     assert_clean(app, f"My Committee, {vp_committees.title_for(line)}")
-    assert any("Compared with the same point in past terms" in block.value for block in app.markdown)
+    assert any("This term vs. past terms" in block.value for block in app.markdown)
     table = next((block.value for block in app.markdown if "ais-compare" in block.value), None)
     assert table is not None and table.count("<tr") >= 5  # header, this term, three earlier ones
 

@@ -1,0 +1,25 @@
+{
+  "_README": [
+    "Who can sign in with Google, and what they get. EDIT THIS FILE, not Python.",
+    "",
+    "Keys are the shared ufais.org officer mailboxes, which pass from one officer",
+    "to the next, so this list rarely changes between terms. Anyone not listed",
+    "here (or added under Settings -> Officer Access) is refused.",
+    "",
+    "  role      : vp, president, or admin (treasury@: same as the treasury password).",
+    "  committee : the committee ID the person lands on (ais_fmd/config/categories.py).",
+    "",
+    "Source: E-Board meeting notes and treasury@ mail, 2026-10-26. corporate@ is",
+    "the VP of Operations, whose committee replaced Corporate Relations (ID 6).",
+    "",
+    "Keys beginning with an underscore are ignored."
+  ],
+
+  "president@ufais.org":  {"role": "president", "committee": 4},
+  "treasury@ufais.org":   {"role": "admin",     "committee": 2},
+  "consulting@ufais.org": {"role": "vp", "committee": 7},
+  "membership@ufais.org": {"role": "vp", "committee": 5},
+  "corporate@ufais.org":  {"role": "vp", "committee": 6},
+  "marketing@ufais.org":  {"role": "vp", "committee": 9},
+  "profdev@ufais.org":    {"role": "vp", "committee": 10}
+}

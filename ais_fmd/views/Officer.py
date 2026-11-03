@@ -37,7 +37,6 @@ from ais_fmd.domain.terms import (
     date_range_for_semester,
     default_semester_index,
     ordered_semesters,
-    previous_semester,
 )
 from ais_fmd.ui import charts, committee_charts, committee_panels, shell, theme
 from ais_fmd.ui import flags as flag_ui
@@ -146,12 +145,6 @@ position = vp_metrics.rollup(summary, line_names)
 percent = position["percent"]
 status = vp_metrics.status_for(percent, position["spent"])
 
-prior = previous_semester(bundle.terms, semester)
-prior_totals = (
-    budget_domain.semester_totals(mine, bundle.terms, prior)
-    if prior
-    else {"income": 0.0, "expenses": 0.0, "net": 0.0, "count": 0}
-)
 # Pace: money used against the share of the term that has passed. Spending 60% of
 # a budget means something different in week 3 than in week 12.
 elapsed = vp_metrics.term_elapsed_percent(bundle.terms, semester)
@@ -166,13 +159,9 @@ with tiles_column:
     shell.metric_row(
         [
             {"label": "Budget", "value": position["budget"]},
-            {
-                "label": "Spent",
-                "value": position["spent"],
-                "delta": position["spent"] - prior_totals["expenses"],
-                "inverse": True,
-                "tone": tone,
-            },
+            # No change-vs-last-term arrow: VPs read a green down-arrow as
+            # "spending went down" (#9). The tile's colour carries the status.
+            {"label": "Spent", "value": position["spent"], "tone": tone},
         ]
     )
     shell.metric_row(
@@ -193,9 +182,6 @@ with bar_column:
 pace = vp_metrics.pace_sentence(position, elapsed, semester)
 if pace:
     shell.say(pace, caption=True)
-
-if prior:
-    st.caption(f"Spending change compares against {prior}.")
 
 if status == "over":
     shell.notify(
@@ -337,16 +323,37 @@ past_terms = vp_history.same_point_in_past_terms(
 )
 if past_terms is not None:
     st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
-    st.markdown("**Compared with the same point in past terms**")
-    shell.say(vp_history.comparison_sentence(past_terms) or "")
-    with shell.card("committee-compare", order=4):
-        shell.html(committee_panels.comparison_table(past_terms, status))
-    st.caption(
-        f"\"Same point\" means {past_terms.elapsed_percent:.0f}% of the way through each "
-        f"term, as of {past_terms.as_of:%b} {past_terms.as_of.day} (the earlier of today "
-        "and the latest charge on record). Each term is measured against its own budget. "
-        "The black mark on each bar is where this term is now."
+    usual = vp_history.compare_to_usual(past_terms)
+    tag = vp_history.VERDICT_TAGS.get(usual["verdict"]) if usual else None
+    kind = {"more": "approaching", "same": "on track", "less": "on track"}.get(usual["verdict"] if usual else "")
+    st.markdown(
+        "**This term vs. past terms**" + (f" &nbsp;{shell.pill(tag, kind)}" if tag else ""),
+        unsafe_allow_html=True,
     )
+    sentence = vp_history.short_sentence(past_terms)
+    if sentence:
+        shell.say(sentence)
+    shell.chart(
+        committee_charts.same_point_bars(
+            vp_history.chart_frame(past_terms),
+            usual["typical"] if usual else None,
+            # The usual line is the same-season median, so say which season.
+            usual["label"].replace("past ", "usual for ").replace(" terms", "") if usual else "usual",
+        ),
+        key="committee_same_point",
+    )
+    st.caption(
+        f"Each bar is how much of that term's budget was spent by the same point: "
+        f"{past_terms.elapsed_percent:.0f}% of the way through the term."
+    )
+    with st.expander("See the numbers"):
+        with shell.card("committee-compare", order=4):
+            shell.html(committee_panels.comparison_table(past_terms, status))
+        st.caption(
+            f"Measured as of {past_terms.as_of:%b} {past_terms.as_of.day} (the earlier of today and "
+            "the latest charge on record). Each term is measured against its own budget. "
+            "The black mark on each bar is where this term is now."
+        )
 
 st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 

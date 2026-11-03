@@ -211,3 +211,30 @@ def test_the_display_table_leads_with_this_term_and_tags_the_same_season():
     assert shown["Term"].tolist() == ["Fall 2026 (now)", "Spring 2026", "Fall 2025 · same season"]
     assert shown["Of its budget"].tolist() == pytest.approx([50.0, 80.0, 15.0])
     assert shown["Ended the term at"].tolist() == ["—", "100%", "65%"]  # this term has not ended
+
+
+# --- The simpler headline and chart --------------------------------------------
+
+
+def test_the_verdict_and_short_sentence_agree_with_the_long_one():
+    comparison = _comparison(95.0, [("Spring 2026", False, 80.0), ("Fall 2025", True, 15.0), ("Fall 2024", True, 25.0)])
+    usual = vp_history.compare_to_usual(comparison)
+    assert usual == {"typical": 20.0, "current": 95.0, "label": "past Fall terms", "verdict": "more"}
+    assert vp_history.VERDICT_TAGS[usual["verdict"]] == "More than usual"
+    assert vp_history.short_sentence(comparison) == (
+        "95% of your budget is used. By this point, past Fall terms had used about 20%."
+    )
+
+
+def test_no_short_sentence_without_something_to_compare():
+    assert vp_history.compare_to_usual(None) is None
+    assert vp_history.short_sentence(_comparison(None, [("Fall 2025", True, 80.0)])) is None
+
+
+def test_the_chart_leads_with_this_term_and_skips_terms_with_no_budget():
+    comparison = _comparison(60.0, [("Spring 2026", False, 37.0), ("Fall 2025", True, None)])
+    frame = vp_history.chart_frame(comparison)
+    assert frame.to_dict("records") == [
+        {"Term": "Fall 2026", "Used": 60.0, "Now": True},
+        {"Term": "Spring 2026", "Used": 37.0, "Now": False},
+    ]
