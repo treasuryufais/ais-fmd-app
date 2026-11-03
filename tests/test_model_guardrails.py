@@ -355,3 +355,29 @@ def test_every_run_gets_a_five_minute_deadline(backend, model):
     plan = metering.RunPlan("spend_review", rows=1, calls=1, prompt_chars_per_call=30000)
     gate = metering.open_run(backend, plan, ACTOR, now=NOW).gate
     assert 295 <= gate.deadline - _time.monotonic() <= 300
+
+
+# --- Hard ceilings: a secret can lower a limit, never raise one -------------
+
+@pytest.mark.parametrize("name, value, read, ceiling", [
+    ("AIS_FMD_LLM_MONTHLY_CAP_USD", "500", settings.llm_monthly_cap_usd, settings.HARD_MONTHLY_CAP_USD),
+    ("AIS_FMD_LLM_MAX_ROWS_PER_RUN", "100000", settings.llm_max_rows_per_run, settings.HARD_MAX_ROWS_PER_RUN),
+    ("AIS_FMD_LLM_MAX_CALLS_PER_RUN", "1000", settings.llm_max_calls_per_run, settings.HARD_MAX_CALLS_PER_RUN),
+    ("AIS_FMD_LLM_MAX_RUNS_PER_DAY", "1000", settings.llm_max_runs_per_day, settings.HARD_MAX_RUNS_PER_DAY),
+    ("AIS_FMD_LLM_RUN_DEADLINE_SECONDS", "86400", settings.llm_run_deadline_seconds, settings.HARD_RUN_DEADLINE_SECONDS),
+    ("AIS_FMD_LLM_MAX_OUTPUT_TOKENS", "64000", settings.llm_max_output_tokens, settings.HARD_MAX_OUTPUT_TOKENS),
+])
+def test_a_secret_cannot_raise_a_limit_past_its_ceiling(monkeypatch, name, value, read, ceiling):
+    monkeypatch.setenv(name, value)
+    assert read() == ceiling
+
+
+def test_a_secret_can_still_lower_the_monthly_cap(monkeypatch):
+    monkeypatch.setenv("AIS_FMD_LLM_MONTHLY_CAP_USD", "0.50")
+    assert settings.llm_monthly_cap_usd() == 0.50
+
+
+@pytest.mark.parametrize("value", ["nan", "-3", "inf"])
+def test_a_nonsense_monthly_cap_never_opens_the_tap(monkeypatch, value):
+    monkeypatch.setenv("AIS_FMD_LLM_MONTHLY_CAP_USD", value)
+    assert settings.llm_monthly_cap_usd() <= settings.HARD_MONTHLY_CAP_USD

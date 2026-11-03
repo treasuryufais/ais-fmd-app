@@ -180,27 +180,42 @@ def llm_batch_size() -> int:
 # Enforced in code by `domain.categorize.metering`, on top of the spend limit
 # set on the Anthropic workspace itself. The workspace limit is the outer wall;
 # these stop a bug long before it gets there.
+#
+# HARD CEILINGS (treasury, 2026-11-03: "make sure nothing goes wrong and burns
+# through it all"). A secret can lower any limit below but never raise it past
+# these. Raising a ceiling is a code change, reviewed by the treasurer like any
+# other.
+HARD_MONTHLY_CAP_USD = 5.00
+HARD_MAX_ROWS_PER_RUN = 1000
+HARD_MAX_CALLS_PER_RUN = 25
+HARD_MAX_RUNS_PER_DAY = 20
+HARD_RUN_DEADLINE_SECONDS = 300
+HARD_MAX_OUTPUT_TOKENS = 8000
 
 def llm_monthly_cap_usd() -> float:
     """Most the app may spend on model calls in one calendar month (UTC)."""
     try:
-        return max(0.0, float(_setting("AIS_FMD_LLM_MONTHLY_CAP_USD", "2.00")))
+        cap = float(_setting("AIS_FMD_LLM_MONTHLY_CAP_USD", "2.00"))
     except ValueError:
         return 2.00
+    # `not cap >= 0` also catches NaN, which every comparison would let through.
+    if not cap >= 0:
+        return 0.0
+    return min(cap, HARD_MONTHLY_CAP_USD)
 
 
 def llm_max_rows_per_run() -> int:
     # One click checks a whole statement, or a backlog: ~1,000 rows is 25 calls
     # and, on Haiku, about $0.25 in the worst case.
-    return _positive_int("AIS_FMD_LLM_MAX_ROWS_PER_RUN", 1000)
+    return _positive_int("AIS_FMD_LLM_MAX_ROWS_PER_RUN", 1000, ceiling=HARD_MAX_ROWS_PER_RUN)
 
 
 def llm_max_calls_per_run() -> int:
-    return _positive_int("AIS_FMD_LLM_MAX_CALLS_PER_RUN", 25)
+    return _positive_int("AIS_FMD_LLM_MAX_CALLS_PER_RUN", 25, ceiling=HARD_MAX_CALLS_PER_RUN)
 
 
 def llm_max_runs_per_day() -> int:
-    return _positive_int("AIS_FMD_LLM_MAX_RUNS_PER_DAY", 20)
+    return _positive_int("AIS_FMD_LLM_MAX_RUNS_PER_DAY", 20, ceiling=HARD_MAX_RUNS_PER_DAY)
 
 
 def llm_run_deadline_seconds() -> int:
@@ -209,19 +224,24 @@ def llm_run_deadline_seconds() -> int:
     what was answered is kept and the rest waits for the next run. Haiku answers
     a batch in seconds, so five minutes means something is wrong.
     """
-    return _positive_int("AIS_FMD_LLM_RUN_DEADLINE_SECONDS", 300)
+    return _positive_int(
+        "AIS_FMD_LLM_RUN_DEADLINE_SECONDS", 300, ceiling=HARD_RUN_DEADLINE_SECONDS
+    )
 
 
 def llm_max_output_tokens() -> int:
     """Per call. A batch of 40 verdicts with VP messages is ~4,000 tokens."""
-    return _positive_int("AIS_FMD_LLM_MAX_OUTPUT_TOKENS", 8000)
+    return _positive_int(
+        "AIS_FMD_LLM_MAX_OUTPUT_TOKENS", 8000, ceiling=HARD_MAX_OUTPUT_TOKENS
+    )
 
 
-def _positive_int(name: str, default: int) -> int:
+def _positive_int(name: str, default: int, *, ceiling: int | None = None) -> int:
     try:
-        return max(1, int(_setting(name, str(default))))
+        value = max(1, int(_setting(name, str(default))))
     except ValueError:
-        return default
+        value = default
+    return value if ceiling is None else min(value, ceiling)
 
 
 def banner_text() -> str:
