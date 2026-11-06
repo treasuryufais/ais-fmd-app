@@ -267,7 +267,7 @@ def categorizer_plan(run: CategorizationRun) -> metering.RunPlan:
         purpose="categorize",
         rows=len(residual),
         calls=metering.plan_calls(len(residual), settings.llm_batch_size()),
-        prompt_chars_per_call=llm.residual_listing_chars(residual) if residual else 0,
+        prompt_chars_per_call=llm.residual_listing_chars(residual, run.context) if residual else 0,
     )
 
 
