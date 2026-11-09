@@ -48,7 +48,7 @@ from .predicates import (
     extract_memo,
     is_dues_amount,
 )
-from ...config.categories import committee_name
+from ...config.categories import line_name as committee_name
 from .predicates import COMMITTEE_PURPOSE
 from .scoring import (
     AUTO_APPLY_THRESHOLD,

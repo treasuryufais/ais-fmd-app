@@ -1,20 +1,6 @@
 """
 Treasury portal: budgets, terms and exports. (Statement upload moved to
 Transactions -> Import; see views/ImportStatement.py.)
-
-The original had the Venmo and Checking upload flows as ~130 lines of
-near-verbatim duplicate code in two tabs. There is one flow here, parameterised
-by which parser to use, so a fix to the upload pipeline lands in both places by
-construction.
-
-Fixes visible on this page:
-  F3  deduplication keyed on date+amount+details+account with an occurrence
-      ordinal, enforced by a unique index rather than a pandas filter
-  F4  transactions and the uploaded-files marker commit together or not at all
-  F5  statement shape is validated before parsing; unreadable rows are reported
-      rather than imported as $0.00
-  F7  the committee reference table is generated from config, so it cannot
-      contradict the mapping the code applies
 """
 
 from __future__ import annotations
@@ -23,10 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from ais_fmd import auth
-from ais_fmd.config.categories import (
-    BUDGETED_COMMITTEE_IDS,
-    committee_name,
-)
+from ais_fmd.config.categories import BUDGETED_COMMITTEE_IDS, committee_name
 from ais_fmd.data import repositories as repo
 from ais_fmd.domain import dues
 from ais_fmd.domain import sponsorship
@@ -39,31 +22,12 @@ shell.environment_banner()
 auth.read_only_notice(identity)
 shell.page_header(
     "Treasury",
-    "Upload statements, allocate budgets, and manage academic terms.",
+    "Allocate budgets, manage academic terms, and export the books.",
 )
 
-tab_upload, tab_budgets, tab_terms, tab_export = st.tabs(
-    ["Upload statement", "Budgets", "Terms", "Export"]
-)
+# Statement upload moved to Transactions → Import (ImportStatement.py).
+tab_budgets, tab_terms, tab_export = st.tabs(["Budgets", "Terms", "Export"])
 
-# ============================================================================
-# UPLOAD
-# ============================================================================
-
-with tab_upload:
-    # Moved 2026-10-20: importing is one linear flow on Transactions -> Import,
-    # with the Haiku passes beside it.
-    shell.say(
-        "Statement import has moved to **Transactions → Import**, where uploading, "
-        "Haiku's suggestions, importing and the spend review run on one page."
-    )
-    if st.button("Go to Import", icon=":material/upload:", key="treasury_go_import"):
-        st.session_state["transactions_hub"] = "Import"
-        st.switch_page("ais_fmd/views/TransactionsHub.py")
-    files = repo.load_uploaded_files()
-    if not files.empty:
-        st.markdown("#### Previously uploaded files")
-        shell.dataframe(files.head(25))
 
 # ============================================================================
 # BUDGETS
@@ -108,6 +72,7 @@ with tab_budgets:
                         step=50.0,
                         format="%.2f",
                         key=f"budget_{selected_term}_{committee_id}",
+                        disabled=identity.read_only,
                     )
             saved = st.form_submit_button("Save budgets", type="primary", disabled=identity.read_only)
 
@@ -192,11 +157,13 @@ with tab_terms:
                     value=existing,
                     placeholder="35.00,52.50",
                     key="dues_rate_values",
+                    disabled=identity.read_only,
                 )
             with rate_columns[2]:
                 st.markdown("&nbsp;", unsafe_allow_html=True)
                 confirmed = st.checkbox(
-                    "Confirmed", value=already_confirmed, key="dues_rate_confirmed"
+                    "Confirmed", value=already_confirmed, key="dues_rate_confirmed",
+                    disabled=identity.read_only,
                 )
             if st.form_submit_button("Save rates", type="primary", disabled=identity.read_only):
                 parsed = dues.parse_rates(entered)
@@ -220,6 +187,77 @@ with tab_terms:
                         st.success(f"Saved dues rates for {rate_term}.")
                         st.rerun()
 
+    # --- Dues price dates (domain/dues_checks.py) -----------------------------
+
+    st.markdown("#### Dues price dates")
+    shell.say(
+        "When the price goes up during the term, and when a payment counts as late. "
+        "The Dues page checks every payment against the price for its date: the early "
+        "price after the increase is underpaid, two prices added up is someone paying "
+        "for another member, and anything after the late cutoff gets a second look."
+    )
+    if not terms.empty:
+        # The term picker sits outside the form: inside one, choosing another term
+        # would not reload that term's stored dates until the form was submitted.
+        schedule_term = st.selectbox(
+            "Term",
+            ordered_terms["TermID"].tolist(),
+            format_func=lambda value: f"{value} — {semester_names.get(value, '')}",
+            key="dues_schedule_term",
+        )
+        row = ordered_terms[ordered_terms["TermID"] == schedule_term].iloc[0].to_dict()
+        with st.form(f"dues_schedule_form_{schedule_term}"):
+
+            def _stored_price(field: str) -> float | None:
+                value = row.get(field)
+                return None if value is None or pd.isna(value) else float(value)
+
+            def _stored_day(field: str):
+                value = pd.to_datetime(row.get(field), errors="coerce")
+                return None if pd.isna(value) else value.date()
+
+            price_columns = st.columns(4)
+            early_price = price_columns[0].number_input(
+                "Early price", min_value=0.0, step=5.0, format="%.2f",
+                value=_stored_price("dues_early_price"), placeholder="50.00", disabled=identity.read_only,
+            )
+            increase_date = price_columns[1].date_input(
+                "Early price through", value=_stored_day("dues_increase_date"),
+                help="The last day the early price applies, inclusive.", disabled=identity.read_only,
+            )
+            late_price = price_columns[2].number_input(
+                "Then", min_value=0.0, step=5.0, format="%.2f",
+                value=_stored_price("dues_late_price"), placeholder="65.00", disabled=identity.read_only,
+            )
+            late_cutoff = price_columns[3].date_input(
+                "Late after", value=_stored_day("dues_late_cutoff"),
+                help="Payments after this date are flagged: late dues, or paying for someone else?", disabled=identity.read_only,
+            )
+            if st.form_submit_button("Save price dates", type="primary", disabled=identity.read_only):
+                if (early_price is None) != (late_price is None) or (
+                    early_price is not None and increase_date is None
+                ):
+                    shell.error_state(
+                        "Fill in both prices and the date",
+                        "The checks need the early price, the date it ends, and the price after.",
+                    )
+                else:
+                    result = repo.set_term_dues_schedule(
+                        schedule_term,
+                        early_price,
+                        late_price,
+                        increase_date.isoformat() if increase_date else None,
+                        late_cutoff.isoformat() if late_cutoff else None,
+                        identity.email,
+                    )
+                    if result.error:
+                        shell.error_state("Could not save the price dates", result.error)
+                    elif result.unchanged:
+                        shell.notify("info", f"{schedule_term} already had those dates.")
+                    else:
+                        st.success(f"Saved dues price dates for {schedule_term}.")
+                        st.rerun()
+
     st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 
     # --- Per-term sponsorship goal (M20) --------------------------------------
@@ -227,8 +265,8 @@ with tab_terms:
     st.markdown("#### Sponsorship goal for a term")
     shell.say(
         "How much sponsorship/donation money the org is aiming to raise this "
-        "term. Set once here; the Dashboard shows how collection is tracking "
-        "against it, the same way it does for dues."
+        "term. Set once here; Home (This term in detail) shows how collection is "
+        "tracking against it, the same way it does for dues."
     )
 
     if terms.empty:
@@ -263,13 +301,15 @@ with tab_terms:
                     step=100.0,
                     format="%.2f",
                     key="sponsorship_goal_value",
+                    disabled=identity.read_only,
                 )
             with goal_columns[2]:
                 st.markdown("&nbsp;", unsafe_allow_html=True)
                 clear_goal = st.checkbox(
-                    "No goal", value=goal_already_unset, key="sponsorship_goal_clear"
+                    "No goal", value=goal_already_unset, key="sponsorship_goal_clear",
+                    disabled=identity.read_only,
                 )
-            if st.form_submit_button("Save goal", type="primary"):
+            if st.form_submit_button("Save goal", type="primary", disabled=identity.read_only):
                 result = repo.set_term_sponsorship_goal(
                     goal_term,
                     None if clear_goal else entered_goal,
@@ -289,7 +329,7 @@ with tab_terms:
     shell.say(
         "Every term with its goal and how much actually came in -- so a goal "
         "typo or an old target is easy to spot without switching terms one "
-        "at a time on the Dashboard.",
+        "at a time on Home.",
         caption=True,
     )
 
@@ -362,7 +402,7 @@ with tab_terms:
                             disabled=["transactionid", "Date", "Amount", "Details"],
                             column_config={
                                 "transactionid": None,  # identity only, not shown
-                                "Amount": st.column_config.NumberColumn(format="$%.2f"),
+                                "Amount": st.column_config.NumberColumn(format="dollar"),
                                 "Details": st.column_config.TextColumn(width="large"),
                                 "Sponsor": st.column_config.TextColumn(
                                     "Sponsor", help="Who this payment was actually from."
@@ -455,11 +495,11 @@ with tab_terms:
     with st.form("term_form"):
         columns = st.columns(2)
         with columns[0]:
-            term_id = st.text_input("Term ID", placeholder="FA26")
-            semester = st.text_input("Semester name", placeholder="Fall 2026")
+            term_id = st.text_input("Term ID", placeholder="FA26", disabled=identity.read_only)
+            semester = st.text_input("Semester name", placeholder="Fall 2026", disabled=identity.read_only)
         with columns[1]:
-            start_date = st.date_input("Start date")
-            end_date = st.date_input("End date")
+            start_date = st.date_input("Start date", disabled=identity.read_only)
+            end_date = st.date_input("End date", disabled=identity.read_only)
         add_clicked = st.form_submit_button("Add term", type="primary", disabled=identity.read_only)
 
     if add_clicked:

@@ -11,7 +11,7 @@ everything.
 The model here is role-based: every page declares the role it needs, and the
 check happens in one place. In production `current_user()` would read a Supabase
 session and look the role up in a `profiles` table with RLS enforcing it
-server-side; the sandbox lets you switch roles from the sidebar so the gating
+server-side; the sandbox lets you switch roles from the profile menu so the gating
 is actually testable without standing up an auth provider.
 
 The important part is the *shape*: authorisation is a property of the user, not
@@ -116,6 +116,7 @@ def current_user() -> Identity:
     if _sandbox_open():
         if SESSION_KEY not in st.session_state:
             st.session_state[SESSION_KEY] = _default_identity()
+            _restore_person_from_url()
         return st.session_state[SESSION_KEY]
 
     identity = st.session_state.get(SESSION_KEY)
@@ -414,7 +415,7 @@ def require(required: Role) -> Identity:
         f"{ROLE_DESCRIPTIONS[required]}"
     )
     if _sandbox_open():
-        st.caption("Switch roles from the sidebar to explore this page.")
+        st.caption("Switch roles from the profile menu (top right) to explore this page.")
     st.stop()
     raise AssertionError("unreachable")  # pragma: no cover
 
@@ -474,14 +475,26 @@ def _apply_demo_profile() -> None:
     if identity is None:
         return
     set_identity(identity)
-    st.session_state["ais_role_picker"] = identity.role
-    if identity.committee_id is not None:
-        st.session_state["ais_committee_picker"] = identity.committee_id
+    st.session_state.pop("ais_signin_picker", None)  # re-derived from the identity on the next run
+
+
+def sandbox_people() -> list[tuple[str, Role, int | None]]:
+    """Who can sign in: (label, role, committee) for the President, Treasurer and each VP."""
+    from .config.vp_committees import PRESIDENT_LINE_ID, VP_COMMITTEES
+
+    return [
+        ("President", Role.PRESIDENT, PRESIDENT_LINE_ID),
+        ("Treasurer", Role.TREASURER, None),
+        *[(f"{committee.title} VP", Role.OFFICER, committee.budget_ids[0]) for committee in VP_COMMITTEES],
+    ]
 
 
 def role_switcher() -> None:
     """
     Sandbox-only control for exercising the gating.
+
+    Renders into whatever container is active -- the profile menu, since the
+    sidebar was retired on 2026-11-08 (`shell.profile_menu`).
 
     Deliberately absent in production -- there, the role comes from the
     authenticated session and cannot be chosen by the client.
@@ -490,11 +503,10 @@ def role_switcher() -> None:
         return
 
     identity = current_user()
-    st.sidebar.markdown("### Signed in as")
 
     demo_emails = _demo_profile_emails()
     if demo_emails:
-        st.sidebar.selectbox(
+        st.selectbox(
             "Demo sign-in",
             [_DEMO_NONE] + demo_emails,
             key="ais_demo_profile",
@@ -504,41 +516,71 @@ def role_switcher() -> None:
                 "lookup Google sign-in will use, so you see exactly what that person would."
             ),
         )
-    st.sidebar.caption(identity.email)
 
-    options = list(Role)
-    chosen = st.sidebar.selectbox(
-        "Role",
-        options,
-        index=options.index(identity.role),
-        format_func=lambda role: role.label,
-        key="ais_role_picker",
-        help="Sandbox only. In production this comes from the authenticated session.",
+    # The people who sign in are the committee heads: the President, the
+    # Treasurer (who heads Treasury) and one VP per committee. Members and
+    # admins never sign in, so they are not offered here (2026-11-09).
+    people = sandbox_people()
+    labels = [label for label, _role, _committee in people]
+    current = next(
+        (label for label, role, committee in people
+         if role == identity.role and (role != Role.OFFICER or committee == identity.committee_id)),
+        None,
     )
-    # A VP always belongs to a committee, so testing as one needs a committee
-    # to be chosen too. Without this an Officer would have committee_id None.
-    committee_id = identity.committee_id
-    if chosen == Role.OFFICER:
-        from .config.categories import BUDGETED_COMMITTEE_IDS, committee_name
+    # Changing the identity happens only when someone picks, never because the
+    # picker rendered: an identity not on the list (a test's plain member, a
+    # demo profile) is left as it is and the picker shows nothing chosen.
+    if st.session_state.get("ais_signin_picker") != current:
+        st.session_state["ais_signin_picker"] = current
+    st.selectbox(
+        "Signed in as",
+        labels,
+        index=None,
+        placeholder="Someone else",
+        key="ais_signin_picker",
+        on_change=_apply_sandbox_person,
+        help="Sandbox only. In production this comes from Google sign-in and Officer Access.",
+    )
 
-        options_ids = list(BUDGETED_COMMITTEE_IDS)
-        current = committee_id if committee_id in options_ids else options_ids[0]
-        committee_id = st.sidebar.selectbox(
-            "Committee",
-            options_ids,
-            index=options_ids.index(current),
-            format_func=committee_name,
-            key="ais_committee_picker",
-            help="Sandbox only. In production this comes from the VP's profile.",
-        )
-    elif chosen == Role.PRESIDENT:
-        # The President's own budget line; their profile carries it in production.
-        from .config.vp_committees import PRESIDENT_LINE_ID
 
-        committee_id = PRESIDENT_LINE_ID
+def person_label(identity: Identity) -> str | None:
+    """The sign-in picker label for `identity` ("Membership VP"), or None if it isn't on the list."""
+    return next(
+        (label for label, role, committee in sandbox_people()
+         if role == identity.role and (role != Role.OFFICER or committee == identity.committee_id)),
+        None,
+    )
 
-    if chosen != identity.role or committee_id != identity.committee_id:
-        set_identity(Identity(email=identity.email, role=chosen, committee_id=committee_id))
-        st.rerun()
 
-    st.sidebar.caption(ROLE_DESCRIPTIONS[chosen])
+def _restore_person_from_url() -> None:
+    """
+    A page reload starts a new session, which in the sandbox means back to the
+    Treasurer. The Appearance switch reloads on purpose (ui/appearance.py), so
+    it puts the current person in the URL as `?as=Membership VP`; this reads it
+    once and drops it. Sandbox only: in production the identity never comes
+    from the client.
+    """
+    try:
+        chosen = st.query_params.get("as")
+    except Exception:  # noqa: BLE001 - no query params outside a page run
+        return
+    if not chosen:
+        return
+    person = next((p for p in sandbox_people() if p[0] == chosen), None)
+    if person is not None:
+        _label, role, committee_id = person
+        st.session_state[SESSION_KEY] = Identity(email=current_user().email, role=role, committee_id=committee_id)
+    try:
+        del st.query_params["as"]
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _apply_sandbox_person() -> None:
+    chosen = st.session_state.get("ais_signin_picker")
+    person = next((p for p in sandbox_people() if p[0] == chosen), None)
+    if person is None:
+        return
+    _label, role, committee_id = person
+    set_identity(Identity(email=current_user().email, role=role, committee_id=committee_id))
+

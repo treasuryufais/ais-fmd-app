@@ -108,7 +108,7 @@ def same_point_bars(frame: pd.DataFrame, typical: float | None, typical_label: s
     """
     One horizontal bar per term: how much of that term's budget was spent by the
     same point in the term. This term is the ink bar at the top, past terms the
-    quiet grey ones; each bar is labelled with its percentage, and a dashed line
+    quiet grey ones, and any term past 100% is orange; each bar is labelled with its percentage, and a dashed line
     marks what is usual, so the answer reads without the legend.
     """
     if frame is None or frame.empty:
@@ -118,7 +118,11 @@ def same_point_bars(frame: pd.DataFrame, typical: float | None, typical_label: s
     labels = [f"{term} (now)" if now else term for term, now in zip(rows["Term"], rows["Now"])]
     figure = go.Figure(go.Bar(
         y=labels, x=rows["Used"], orientation="h",
-        marker=dict(color=[p.ink if now else p.line_edge for now in rows["Now"]]),
+        # Over 100% is orange whichever term it is -- the one state that needs attention.
+        marker=dict(color=[
+            p.over if used > 100 else p.ink if now else p.line_edge
+            for used, now in zip(rows["Used"], rows["Now"])
+        ]),
         text=[f"{value:.0f}%" for value in rows["Used"]], textposition="outside", cliponaxis=False,
         hovertemplate="<b>%{y}</b><br>%{x:.0f}% of its budget by this point<extra></extra>",
         showlegend=False,
@@ -135,5 +139,56 @@ def same_point_bars(frame: pd.DataFrame, typical: float | None, typical_label: s
         margin=dict(l=8, r=40, t=28, b=8),
         xaxis=dict(range=[0, top * 1.12], ticksuffix="%", showgrid=True, zeroline=False),
         yaxis=dict(title=None),
+    )
+    return figure
+
+
+# Each committee's colour, shared with the Events calendar so a committee looks
+# the same everywhere it appears. Built at call time: the tokens follow the
+# session's light or dark theme.
+def committee_colors() -> dict[int, str]:
+    t = theme.tokens()
+    return {
+        5: t.ACCENT,                              # Membership
+        4: t.INK,                                 # President
+        6: t.INK_MUTE,                            # Operations
+        7: "#5B8DEF" if t.dark else "#2F6FDB",    # Consulting
+        10: t.POSITIVE,                           # Professional Development
+        9: t.WARNING,                             # Marketing
+        2: "#9A8DF0" if t.dark else "#6B5BD6",    # Treasury
+    }
+
+
+def committee_color(committee_id: int | None) -> str:
+    """A committee's colour; an unknown or missing committee is muted grey."""
+    t = theme.tokens()
+    if committee_id is None:
+        return t.INK_MUTE
+    return committee_colors().get(int(committee_id), t.INK_MUTE)
+
+
+def kind_bars(split: pd.DataFrame, color: str) -> go.Figure:
+    """
+    Spending by kind (domain/spend_kinds.py), biggest at the top, each bar
+    labelled with its amount and share so no table is needed beside it.
+    """
+    t = theme.tokens()
+    if split.empty:
+        return charts.empty_figure("Nothing spent yet.")
+    data = split.iloc[::-1]  # plotly draws the first row at the bottom
+    figure = go.Figure(go.Bar(
+        y=data["Kind"], x=data["Amount"], orientation="h",
+        marker=dict(color=color, cornerradius=6),
+        text=[f"${amount:,.0f} · {share:.0f}%" for amount, share in zip(data["Amount"], data["Share"])],
+        textposition="outside", cliponaxis=False,
+        textfont=dict(color=t.INK_SOFT, size=12),
+        customdata=data["Charges"],
+        hovertemplate="<b>%{y}</b><br>$%{x:,.2f} across %{customdata} charge(s)<extra></extra>",
+    ))
+    figure.update_layout(
+        height=max(220, 70 + 44 * len(data)), showlegend=False, bargap=0.35,
+        margin=dict(l=8, r=8, t=8, b=8),
+        xaxis=dict(visible=False, range=[0, float(data["Amount"].max()) * 1.45]),
+        yaxis=dict(title=None, ticks="", tickfont=dict(size=13, color=t.INK)),
     )
     return figure

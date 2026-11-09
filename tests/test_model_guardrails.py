@@ -170,7 +170,7 @@ def test_rebooking_a_charge_makes_it_eligible_exactly_once_more(backend, model):
     transactions = load(backend, [charge("2026-09-22", -16.10, LOWES, 5)])
     review(backend)
     tid = int(transactions.iloc[0]["transactionid"])
-    backend.update_transactions([TransactionChange(tid, None, 8)], ACTOR)
+    backend.update_transactions([TransactionChange(tid, None, 7)], ACTOR)  # Consulting; 8 (Meeting Food) folds into Membership now
 
     assert review(backend).saved == 1
     assert review(backend).refusal == "Nothing new to review."

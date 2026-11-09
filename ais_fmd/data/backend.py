@@ -192,6 +192,17 @@ class Backend(ABC):
     ) -> UpdateResult:
         return self._unsupported("Sponsorship goal")
 
+    def set_term_dues_schedule(
+        self,
+        term_id: str,
+        early_price: float | None,
+        late_price: float | None,
+        increase_date: str | None,
+        late_cutoff: str | None,
+        actor: str,
+    ) -> UpdateResult:
+        return self._unsupported("Dues price dates")
+
     def set_transaction_sponsor_name(
         self, transaction_id: int, sponsor_name: str | None, actor: str
     ) -> UpdateResult:
@@ -209,6 +220,27 @@ class Backend(ABC):
         self, term_id: str, match_key: str, alias_key: str, actor: str
     ) -> UpdateResult:
         return self._unsupported("Member alias confirmation")
+
+    # Events (domain/events.py). SQLite only for now: see migrations/016.
+    def fetch_events(self, term_id: str | None = None) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    def sync_events(self, events: list[dict], actor: str) -> UpdateResult:
+        return self._unsupported("Calendar sync")
+
+    def set_event_attendance(
+        self, event_id: int, attendance: int | None, source: str, actor: str
+    ) -> UpdateResult:
+        return self._unsupported("Event attendance")
+
+    def fetch_event_links(self) -> pd.DataFrame:
+        return pd.DataFrame()
+
+    def link_transactions_to_events(self, pairs: list[tuple[int, int]], actor: str) -> UpdateResult:
+        return self._unsupported("Linking spending to events")
+
+    def unlink_transaction_from_event(self, transaction_id: int, actor: str) -> UpdateResult:
+        return self._unsupported("Linking spending to events")
 
     def fetch_profiles(self) -> pd.DataFrame:
         return pd.DataFrame()
@@ -469,6 +501,23 @@ class Backend(ABC):
         `committee_id` is one of `allowed_committee_ids`, the caller's own lines.
         """
         return self._unsupported("Saving a committee plan")
+
+    def fetch_planned_events(
+        self, committee_ids: tuple[int, ...] | None = None, semester: str | None = None
+    ) -> pd.DataFrame:
+        """Events a committee plans to hold, optionally only these committees' and one semester's."""
+        raise NotImplementedError(f"{self.name} does not store event plans yet.")
+
+    def replace_planned_events(
+        self,
+        committee_id: int,
+        semester: str,
+        events: list[dict],
+        allowed_committee_ids: tuple[int, ...],
+        actor: str,
+    ) -> UpdateResult:
+        """Make `events` the committee's whole event plan for `semester`; own committee only."""
+        return self._unsupported("Saving an event plan")
 
     def fetch_budget_requests(
         self, committee_ids: tuple[int, ...] | None = None, semester: str | None = None
