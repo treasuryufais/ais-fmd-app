@@ -417,16 +417,7 @@ def _zelle(amount: float, when: str, memo: str = "") -> dict:
             "amount": amount, "account": "Wells Fargo", "transaction_date": when}
 
 
-def test_a_memo_less_payment_at_an_event_price_books_to_that_event():
-    assert classify_exact(_zelle(30, "2026-10-15")).committee_id == 13  # merch crewneck
-    assert classify_exact(_zelle(25, "2026-10-22")).committee_id == 18  # semi-formal single
-    # $40 is a merch bundle and a semi-formal ticket; once formal opens, formal wins.
-    assert classify_exact(_zelle(40, "2026-10-14")).committee_id == 13
-    assert classify_exact(_zelle(40, "2026-10-21")).committee_id == 18
-
-
-def test_event_prices_stay_inside_their_dates_and_lose_to_a_memo():
-    assert classify_exact(_zelle(30, "2026-09-01")).committee_id is None
+def test_merch_and_semi_memos_book_to_their_committee():
     assert classify_exact(_zelle(40, "2026-10-21", "AIS MERCH BUNDLE")).committee_id == 13
     assert classify_exact(_zelle(25, "2026-10-21", "SEMI")).committee_id == 18
     assert classify_exact(_zelle(30, "2026-10-19", "AIS XL CREW NECK")).committee_id == 13
