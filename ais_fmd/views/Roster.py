@@ -119,7 +119,7 @@ with st.expander("Upload a membership list", expanded=False):
                     )
                     if save_result.ok:
                         repo.invalidate()
-                        shell.notify(
+                        shell.flash(
                             "success",
                             f"Saved {save_result.updated} members to {selected}.",
                         )
@@ -277,7 +277,7 @@ with suggested_tab:
                 )
                 if alias_result.ok:
                     repo.invalidate()
-                    shell.notify(
+                    shell.flash(
                         "success",
                         f"Taught the roster '{payment.payer_name}' = "
                         f"{member.display_name}.",

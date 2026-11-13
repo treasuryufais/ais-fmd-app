@@ -14,6 +14,8 @@ genuinely changed rows are sent -- in one batched call.
 
 from __future__ import annotations
 
+import hashlib
+
 import pandas as pd
 import streamlit as st
 
@@ -135,9 +137,16 @@ original_by_id = {
     for _, row in view.iterrows()
 }
 
+# Streamlit stores staged edits by row POSITION. Keyed on the visible rows, a
+# page or filter change gets a fresh editor instead of replaying the old page's
+# edits onto whatever transactions now sit at those positions.
+editor_key = "txn_editor_" + hashlib.sha1(
+    ",".join(str(int(i)) for i in view["transactionid"]).encode()
+).hexdigest()[:16]
+
 edited = st.data_editor(
     editable,
-    key="txn_editor",
+    key=editor_key,
     width="stretch",
     hide_index=True,
     disabled=(
@@ -213,7 +222,7 @@ if save_clicked and changes:
             f"Transaction IDs: {', '.join(str(i) for i in result.failed[:20])}",
         )
     else:
-        st.success(
+        shell.flash("success",
             f"Saved {result.updated} change(s)."
             + (f" {result.unchanged} row(s) were already up to date." if result.unchanged else "")
         )

@@ -99,6 +99,7 @@ def page_header(title: str, subtitle: str = "") -> None:
             st.segmented_control(
                 "View", labels, key=key, selection_mode="single", label_visibility="collapsed"
             )
+    show_flash()
     st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 
 
@@ -206,6 +207,25 @@ def error_state(headline: str, detail: str = "") -> None:
 def notify(kind: str, text: str) -> None:
     """success / warning / info that is safe to contain currency."""
     {"success": st.success, "warning": st.warning, "info": st.info}[kind](money_safe(text))
+
+
+_FLASH_KEY = "_shell_flash"
+
+
+def flash(kind: str, text: str) -> None:
+    """
+    A `notify` that survives the `st.rerun()` after a save.
+
+    A message drawn just before `st.rerun()` is wiped by the rerun, so the user
+    clicked Save and saw nothing. This holds it for `page_header` to draw on
+    the next run instead.
+    """
+    st.session_state.setdefault(_FLASH_KEY, []).append((kind, text))
+
+
+def show_flash() -> None:
+    for kind, text in st.session_state.pop(_FLASH_KEY, []):
+        notify(kind, text)
 
 
 def pill(label: str, kind: str = "muted") -> str:
