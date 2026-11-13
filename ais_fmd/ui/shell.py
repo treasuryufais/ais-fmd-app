@@ -81,8 +81,13 @@ def page_header(title: str, subtitle: str = "") -> None:
     here, beside the title, so every merged page gets it without changes.
     """
     pending = st.session_state.pop(_HUB_PENDING_KEY, None)
-    if pending:
+    # Long view names ("Import & review · All transactions · Needs attention")
+    # don't fit beside the title; they go on their own line under it instead.
+    stacked = bool(pending) and sum(len(label) for label in pending[1]) > 32
+    if pending and not stacked:
         title_column, switch_column = st.columns([3, 2], vertical_alignment="bottom")
+    elif pending:
+        title_column, switch_column = st.container(), st.container()
     else:
         title_column, switch_column = st.container(), None
     with title_column:

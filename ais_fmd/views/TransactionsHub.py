@@ -19,8 +19,9 @@ shell.hub(
     [
         # Treasurers land on Import: upload, Haiku, import and the spend
         # review run top to bottom there. Members never see it.
-        ("Import", "ImportStatement.py", auth.Role.TREASURER),
-        ("Transactions", "Transactions.py", auth.Role.MEMBER),
-        ("Review Queue", "ReviewQueue.py", auth.Role.TREASURER),
+        ("Import & review", "ImportStatement.py", auth.Role.TREASURER),
+        ("All transactions", "Transactions.py", auth.Role.MEMBER),
+        # The Review Queue, renamed: uncategorized rows, VP disputes and AI check flags.
+        ("Needs attention", "ReviewQueue.py", auth.Role.TREASURER),
     ],
 )
