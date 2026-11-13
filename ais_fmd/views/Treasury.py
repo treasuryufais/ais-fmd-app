@@ -116,7 +116,7 @@ with tab_budgets:
             if result.error:
                 shell.error_state("Could not save budgets", result.error)
             else:
-                st.success(
+                shell.flash("success",
                     f"Saved. {result.updated} allocation(s) changed, "
                     f"{result.unchanged} already matched."
                 )
@@ -217,7 +217,7 @@ with tab_terms:
                     elif result.unchanged:
                         shell.notify("info", f"{rate_term} already had those rates.")
                     else:
-                        st.success(f"Saved dues rates for {rate_term}.")
+                        shell.flash("success", f"Saved dues rates for {rate_term}.")
                         st.rerun()
 
     st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
@@ -280,7 +280,7 @@ with tab_terms:
                 elif result.unchanged:
                     shell.notify("info", f"{goal_term} already had that goal.")
                 else:
-                    st.success(f"Saved sponsorship goal for {goal_term}.")
+                    shell.flash("success", f"Saved sponsorship goal for {goal_term}.")
                     st.rerun()
 
     # --- Sponsorship history, all terms at a glance ---------------------------
@@ -392,7 +392,7 @@ with tab_terms:
                             if errors:
                                 shell.error_state("Some sponsor names could not be saved", errors[0])
                             else:
-                                st.success("Saved.")
+                                shell.flash("success", "Saved.")
                                 st.rerun()
 
     st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
@@ -443,7 +443,7 @@ with tab_terms:
                 if result.error:
                     shell.error_state("Could not change the term", result.error)
                 else:
-                    st.success(
+                    shell.flash("success",
                         f"{lock_target} is now "
                         f"{'open' if currently_locked else 'closed'}."
                     )
@@ -481,7 +481,7 @@ with tab_terms:
             if result.error:
                 shell.error_state("Could not add the term", result.error)
             else:
-                st.success(f"Added {term_id.strip()}.")
+                shell.flash("success", f"Added {term_id.strip()}.")
                 st.rerun()
 
 # ============================================================================
