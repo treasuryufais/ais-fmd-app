@@ -76,14 +76,14 @@ PAGES: tuple[PageInfo, ...] = (
         ("unpaid", "not paid", "hasn't paid", "haven't paid", "outstanding dues", "roster", "membership list", "owe dues"),
     ),
     PageInfo(
-        "Transactions", "Transactions", "Transactions", "member",
+        "Transactions", "Transactions", "All transactions", "member",
         "every transaction, with search and filters",
         ("transaction", "transactions", "purchase", "charge", "search", "find a payment", "receipt", "statement line"),
     ),
     PageInfo(
-        "Review Queue", "Transactions", "Review Queue", "treasurer",
-        "transactions the categorizer could not resolve, waiting for a person to decide",
-        ("review queue", "uncategorized", "uncategorised", "needs review", "categorize", "categorise", "miscategorized"),
+        "Needs attention", "Transactions", "Needs attention", "treasurer",
+        "transactions the categorizer could not resolve, charges a VP disputed, and the AI check's flags",
+        ("needs attention", "review queue", "disputed", "ai check", "uncategorized", "uncategorised", "needs review", "categorize", "categorise", "miscategorized"),
     ),
     PageInfo(
         "Planner", "Planner", None, "treasurer",
@@ -162,7 +162,7 @@ def find(topic: str) -> list[PageInfo]:
     Pages whose keywords appear in `topic` as whole words, best match first.
 
     The longest matching keyword decides, so "uncategorized transactions" lands
-    on the Review Queue ("uncategorized") rather than Transactions, and
+    on Needs attention ("uncategorized") rather than Transactions, and
     "unpaid dues" lands on the Roster rather than matching "paid dues" inside it.
     """
     lowered = topic.lower()
