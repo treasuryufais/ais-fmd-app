@@ -13,6 +13,7 @@ Properties that make this safe to hand to someone for testing:
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -48,7 +49,15 @@ CREATE TABLE IF NOT EXISTS terms (
     dues_rates          TEXT,
     -- 0 until a human confirms the rates are what the term actually charged.
     -- Seeded rates are copies of the old constant, not evidence.
-    dues_rates_verified INTEGER NOT NULL DEFAULT 0
+    dues_rates_verified INTEGER NOT NULL DEFAULT 0,
+    -- When the dues price goes up during the term (2026-11-08). The early price
+    -- applies through dues_increase_date (inclusive), the late price after it.
+    -- dues_late_cutoff: payments after this date are flagged for a look --
+    -- late dues, or someone paying for another member. All NULL = no checks.
+    dues_early_price    REAL,
+    dues_late_price     REAL,
+    dues_increase_date  TEXT,
+    dues_late_cutoff    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS committeebudgets (
@@ -325,6 +334,83 @@ CREATE TABLE IF NOT EXISTS members (
 
 CREATE INDEX IF NOT EXISTS idx_members_term ON members (term_id);
 
+-- Events, from the club calendar (domain/events.py): the AIS Event Schedule
+-- workbooks or an .ics export of the Google Calendar. external_key is the day
+-- plus the normalised title, so syncing the same schedule again updates rows
+-- instead of duplicating them, and an event keeps its event_id -- which the
+-- links below point at -- across syncs.
+CREATE TABLE IF NOT EXISTS events (
+    event_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    external_key      TEXT NOT NULL UNIQUE,
+    term_id           TEXT,
+    event_date        TEXT NOT NULL,
+    title             TEXT NOT NULL,
+    start_time        TEXT,
+    end_time          TEXT,
+    location          TEXT,
+    owner             TEXT,
+    audience          TEXT,
+    status            TEXT,
+    committee_id      INTEGER,
+    attendance        INTEGER,
+    -- 'schedule' (typed on the sheet), 'member database' (GBM check-ins).
+    attendance_source TEXT,
+    description       TEXT,
+    source            TEXT,
+    calendar_id       TEXT,
+    synced_by         TEXT,
+    synced_at         TEXT DEFAULT CURRENT_TIMESTAMP,
+    -- 1 once someone adds, moves or edits the event in the app; a sync of the
+    -- same event from the calendar sets it back to 0. "Export changes" sends
+    -- only these to Google Calendar.
+    edited_in_app     INTEGER NOT NULL DEFAULT 0,
+    edited_at         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_term ON events (term_id, event_date);
+
+-- Costs typed against an event (2026-11-13): an estimate before it happens,
+-- or a cost the bank statement will never show (cash, a member's card not yet
+-- reimbursed). Purchases from the statement are linked in event_links instead.
+CREATE TABLE IF NOT EXISTS event_costs (
+    cost_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id   INTEGER NOT NULL,
+    kind       TEXT NOT NULL CHECK (kind IN ('estimate', 'manual')),
+    label      TEXT NOT NULL,
+    amount     REAL NOT NULL,
+    added_by   TEXT,
+    added_at   TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_event_costs_event ON event_costs (event_id);
+
+-- Sponsorships expected in a semester (2026-11-17, Planner): one row per
+-- sponsor, pledged or paid. Keyed by the semester's NAME, like planned_events,
+-- so a term can be planned before Treasury defines it. A plan only: the money
+-- itself is the bank transaction, booked to Sponsorship / Donation.
+CREATE TABLE IF NOT EXISTS planned_sponsorships (
+    sponsorship_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    semester   TEXT NOT NULL,
+    sponsor    TEXT NOT NULL,
+    amount     REAL NOT NULL DEFAULT 0 CHECK (amount >= 0),
+    status     TEXT NOT NULL DEFAULT 'Pledged' CHECK (status IN ('Pledged', 'Paid')),
+    paid_on    TEXT,
+    notes      TEXT,
+    updated_by TEXT,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_planned_sponsorships_semester ON planned_sponsorships (semester);
+
+-- Which event a transaction paid for. One event per transaction; confirmed by
+-- a person (a suggestion from domain/events.suggest_links is not stored).
+CREATE TABLE IF NOT EXISTS event_links (
+    transaction_id INTEGER PRIMARY KEY,
+    event_id       INTEGER NOT NULL,
+    linked_by      TEXT,
+    linked_at      TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Module M22: VP/officer -> committee assignment, for the committee-scoped
 -- portal (`views/Officer.py`). Keyed by email so a signed-in Google identity
 -- (Streamlit's native OIDC, not Supabase Auth -- see migrations/002 for why)
@@ -368,8 +454,34 @@ CREATE TABLE IF NOT EXISTS budget_requests (
     requested_at TEXT DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (committee_id, semester)
 );
+
+-- Events a VP plans for a semester (My Plan, 2026-11-09): what, roughly when,
+-- what it should cost and who should come. Like plan lines, keyed by the
+-- semester's name and only an estimate -- it never books or reserves money.
+-- `kind` is the past-event idea it came from ("Tailgate", "GBM"), if any.
+CREATE TABLE IF NOT EXISTS planned_events (
+    planned_event_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+    committee_id        INTEGER NOT NULL,
+    semester            TEXT NOT NULL,
+    event_date          TEXT,
+    title               TEXT NOT NULL,
+    kind                TEXT,
+    estimated_cost      REAL NOT NULL DEFAULT 0,
+    expected_attendance INTEGER,
+    note                TEXT,
+    updated_by          TEXT,
+    updated_at          TEXT DEFAULT CURRENT_TIMESTAMP
+);
 """
 
+
+
+def _describe_dues_schedule(early, late, increase, cutoff) -> str:
+    """One readable line for the audit log."""
+    if early is None and late is None and not increase and not cutoff:
+        return "(none)"
+    price = lambda v: "—" if v is None else f"${float(v):,.2f}"  # noqa: E731
+    return f"{price(early)} through {increase or '—'}, then {price(late)}; late after {cutoff or '—'}"
 
 class SqliteBackend(Backend):
     name = "sandbox-sqlite"
@@ -429,6 +541,15 @@ class SqliteBackend(Backend):
                 # distinct from 0 (a goal of literally $0), same reasoning as
                 # dues_rates being nullable above.
                 ("sponsorship_goal", "REAL"),
+                # Dues price change and late cutoff (domain/dues_checks.py).
+                ("dues_early_price", "REAL"),
+                ("dues_late_price", "REAL"),
+                ("dues_increase_date", "TEXT"),
+                ("dues_late_cutoff", "TEXT"),
+            ],
+            "events": [
+                ("edited_in_app", "INTEGER NOT NULL DEFAULT 0"),
+                ("edited_at", "TEXT"),
             ],
             "transactions": [
                 # Who a sponsorship deposit was actually from. Free text: bank
@@ -587,6 +708,55 @@ class SqliteBackend(Backend):
                     field=term_id,
                     old_value="(none)" if previous is None else f"${previous:,.2f}",
                     new_value="(none)" if goal is None else f"${goal:,.2f}",
+                )
+                connection.commit()
+                result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
+    def set_term_dues_schedule(
+        self,
+        term_id: str,
+        early_price: float | None,
+        late_price: float | None,
+        increase_date: str | None,
+        late_cutoff: str | None,
+        actor: str,
+    ) -> UpdateResult:
+        """
+        Record when a term's dues price goes up, and when a payment counts as late.
+
+        Audited like `set_term_dues_rates`: these decide which payments get
+        flagged as underpaid, so who set them and what they replaced must survive.
+        """
+        fields = ("dues_early_price", "dues_late_price", "dues_increase_date", "dues_late_cutoff")
+        new = (early_price, late_price, increase_date, late_cutoff)
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    f"SELECT {', '.join(fields)} FROM terms WHERE TermID = ?", (term_id,)
+                ).fetchone()
+                if row is None:
+                    result.error = f"Term {term_id} does not exist."
+                    return result
+                old = tuple(row[field] for field in fields)
+                if old == new:
+                    result.unchanged = 1
+                    return result
+                connection.execute(
+                    f"UPDATE terms SET {', '.join(f'{f} = ?' for f in fields)} WHERE TermID = ?",
+                    (*new, term_id),
+                )
+                self._audit(
+                    connection,
+                    transaction_id=None,
+                    action="dues_schedule",
+                    actor=actor,
+                    field=term_id,
+                    old_value=_describe_dues_schedule(*old),
+                    new_value=_describe_dues_schedule(*new),
                 )
                 connection.commit()
                 result.updated = 1
@@ -985,6 +1155,63 @@ class SqliteBackend(Backend):
             result.error = f"{type(exc).__name__}: {exc}"
         return result
 
+    def fetch_planned_events(
+        self, committee_ids: tuple[int, ...] | None = None, semester: str | None = None
+    ) -> pd.DataFrame:
+        return self._scoped_read(
+            "planned_events", committee_ids, semester, "committee_id, event_date IS NULL, event_date, title"
+        )
+
+    def replace_planned_events(
+        self,
+        committee_id: int,
+        semester: str,
+        events: list[dict],
+        allowed_committee_ids: tuple[int, ...],
+        actor: str,
+    ) -> UpdateResult:
+        """Make `events` the committee's whole event plan for `semester` (cleaned by the page)."""
+        result = UpdateResult()
+        if int(committee_id) not in {int(i) for i in allowed_committee_ids}:
+            result.error = "You can only plan for your own committee."
+            return result
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN")
+                before = connection.execute(
+                    "SELECT COUNT(*) FROM planned_events WHERE committee_id = ? AND semester = ?",
+                    (int(committee_id), semester),
+                ).fetchone()[0]
+                connection.execute(
+                    "DELETE FROM planned_events WHERE committee_id = ? AND semester = ?",
+                    (int(committee_id), semester),
+                )
+                for event in events:
+                    connection.execute(
+                        "INSERT INTO planned_events (committee_id, semester, event_date, title, kind, "
+                        "estimated_cost, expected_attendance, note, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            int(committee_id), semester, event.get("event_date"), event["title"],
+                            event.get("kind"), float(event.get("estimated_cost") or 0),
+                            None if event.get("expected_attendance") is None else int(event["expected_attendance"]),
+                            event.get("note"), actor,
+                        ),
+                    )
+                self._audit(
+                    connection,
+                    transaction_id=None,
+                    action="event plan",
+                    actor=actor,
+                    field=f"committee {int(committee_id)} / {semester}",
+                    old_value=f"{before} event(s)",
+                    new_value=f"{len(events)} event(s)",
+                )
+                connection.commit()
+                result.updated = len(events) or 1
+        except sqlite3.Error as exc:
+            result.error = f"{type(exc).__name__}: {exc}"
+        return result
+
     def fetch_budget_requests(
         self, committee_ids: tuple[int, ...] | None = None, semester: str | None = None
     ) -> pd.DataFrame:
@@ -1195,6 +1422,330 @@ class SqliteBackend(Backend):
                 connection.commit()
             result.updated = 1
         except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    # --- Events (domain/events.py) --------------------------------------------
+
+    EVENT_FIELDS = (
+        "term_id", "event_date", "title", "start_time", "end_time", "location",
+        "owner", "audience", "status", "committee_id", "attendance",
+        "attendance_source", "description", "source", "calendar_id",
+    )
+
+    def fetch_events(self, term_id: str | None = None) -> pd.DataFrame:
+        if term_id:
+            return self._read(
+                "SELECT * FROM events WHERE term_id = ? ORDER BY event_date, start_time", (term_id,)
+            )
+        return self._read("SELECT * FROM events ORDER BY event_date, start_time")
+
+    def sync_events(self, events: list[dict], actor: str) -> UpdateResult:
+        """
+        Add new events and update known ones, matched on external_key.
+
+        Never deletes: an event dropped from the calendar may already have
+        spending linked to it, and silently losing that link would undo a
+        person's confirmation. Attendance already recorded is kept when the
+        incoming row has none (the schedule sheets rarely carry it).
+        """
+        result = UpdateResult()
+        fields = self.EVENT_FIELDS
+        assignments = ", ".join(
+            f"{f} = COALESCE(excluded.{f}, events.{f})" if f in ("attendance", "attendance_source")
+            else f"{f} = excluded.{f}"
+            for f in fields
+        )
+        try:
+            with self._connect() as connection:
+                known = {
+                    row["external_key"]
+                    for row in connection.execute("SELECT external_key FROM events")
+                }
+                connection.executemany(
+                    f"INSERT INTO events (external_key, {', '.join(fields)}, synced_by) "
+                    f"VALUES ({', '.join('?' * (len(fields) + 2))}) "
+                    f"ON CONFLICT(external_key) DO UPDATE SET {assignments}, "
+                    "synced_by = excluded.synced_by, synced_at = CURRENT_TIMESTAMP, "
+                    "edited_in_app = 0",
+                    [
+                        (event["external_key"], *(event.get(f) for f in fields), actor)
+                        for event in events
+                    ],
+                )
+                connection.commit()
+            keys = {event["external_key"] for event in events}
+            result.updated = len(keys - known)
+            result.unchanged = len(keys & known)
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    def set_event_attendance(
+        self, event_id: int, attendance: int | None, source: str, actor: str
+    ) -> UpdateResult:
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute(
+                    "UPDATE events SET attendance = ?, attendance_source = ? WHERE event_id = ?",
+                    (attendance, source if attendance is not None else None, event_id),
+                )
+                connection.commit()
+            result.updated = cursor.rowcount
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    def fetch_event_links(self) -> pd.DataFrame:
+        return self._read("SELECT * FROM event_links ORDER BY linked_at")
+
+    def link_transactions_to_events(self, pairs: list[tuple[int, int]], actor: str) -> UpdateResult:
+        """
+        Record that each (transaction_id, event_id) paid for that event.
+
+        Audited per transaction, because which event a purchase belongs to is
+        what a committee's per-event costs are later built from.
+        """
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                for transaction_id, event_id in pairs:
+                    title = connection.execute(
+                        "SELECT title, event_date FROM events WHERE event_id = ?", (event_id,)
+                    ).fetchone()
+                    if title is None:
+                        result.failed.append(int(transaction_id))
+                        continue
+                    before = connection.execute(
+                        "SELECT e.title FROM event_links l JOIN events e USING (event_id) "
+                        "WHERE l.transaction_id = ?",
+                        (transaction_id,),
+                    ).fetchone()
+                    connection.execute(
+                        "INSERT INTO event_links (transaction_id, event_id, linked_by) VALUES (?, ?, ?) "
+                        "ON CONFLICT(transaction_id) DO UPDATE SET event_id = excluded.event_id, "
+                        "linked_by = excluded.linked_by, linked_at = CURRENT_TIMESTAMP",
+                        (int(transaction_id), int(event_id), actor),
+                    )
+                    self._audit(
+                        connection,
+                        transaction_id=int(transaction_id),
+                        action="event_link",
+                        actor=actor,
+                        field="event",
+                        old_value=before["title"] if before else None,
+                        new_value=f"{title['title']} ({title['event_date']})",
+                    )
+                    result.updated += 1
+                connection.commit()
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    def unlink_transaction_from_event(self, transaction_id: int, actor: str) -> UpdateResult:
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                before = connection.execute(
+                    "SELECT e.title FROM event_links l JOIN events e USING (event_id) "
+                    "WHERE l.transaction_id = ?",
+                    (transaction_id,),
+                ).fetchone()
+                if before is None:
+                    result.unchanged = 1
+                    return result
+                connection.execute("DELETE FROM event_links WHERE transaction_id = ?", (transaction_id,))
+                self._audit(
+                    connection, transaction_id=int(transaction_id), action="event_link",
+                    actor=actor, field="event", old_value=before["title"], new_value=None,
+                )
+                connection.commit()
+            result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    def add_event(self, event: dict, actor: str) -> UpdateResult:
+        """
+        Add one event typed in the app. `updated` is the new event_id. Refused
+        when an event with the same day and title already exists.
+        """
+        result = UpdateResult()
+        fields = self.EVENT_FIELDS
+        try:
+            with self._connect() as connection:
+                if connection.execute(
+                    "SELECT 1 FROM events WHERE external_key = ?", (event["external_key"],)
+                ).fetchone():
+                    result.error = "There is already an event with that title on that day."
+                    return result
+                cursor = connection.execute(
+                    f"INSERT INTO events (external_key, {', '.join(fields)}, synced_by, "
+                    "edited_in_app, edited_at) "
+                    f"VALUES ({', '.join('?' * (len(fields) + 2))}, 1, CURRENT_TIMESTAMP)",
+                    (event["external_key"], *(event.get(f) for f in fields), actor),
+                )
+                connection.commit()
+            result.updated = int(cursor.lastrowid)
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    EDITABLE_EVENT_FIELDS = (
+        "event_date", "title", "start_time", "end_time", "location", "owner",
+        "audience", "status", "committee_id", "description", "term_id",
+    )
+
+    def update_event(self, event_id: int, changes: dict, actor: str) -> UpdateResult:
+        """
+        Edit or move an event. The day|title key follows the change, so a later
+        sync of the same event from Google Calendar updates it rather than
+        adding a copy.
+        """
+        result = UpdateResult()
+        changes = {k: v for k, v in changes.items() if k in self.EDITABLE_EVENT_FIELDS}
+        if not changes:
+            result.unchanged = 1
+            return result
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT event_date, title FROM events WHERE event_id = ?", (event_id,)
+                ).fetchone()
+                if row is None:
+                    result.error = "That event no longer exists."
+                    return result
+                day = str(changes.get("event_date", row["event_date"]))[:10]
+                title = str(changes.get("title", row["title"]))
+                key = f"{day}|{re.sub(r'[^a-z0-9]+', ' ', title.lower()).strip()}"
+                clash = connection.execute(
+                    "SELECT 1 FROM events WHERE external_key = ? AND event_id <> ?", (key, event_id)
+                ).fetchone()
+                if clash:
+                    result.error = "There is already an event with that title on that day."
+                    return result
+                assignments = ", ".join(f"{name} = ?" for name in changes)
+                connection.execute(
+                    f"UPDATE events SET {assignments}, external_key = ?, edited_in_app = 1, "
+                    "edited_at = CURRENT_TIMESTAMP, synced_by = ? WHERE event_id = ?",
+                    (*changes.values(), key, actor, event_id),
+                )
+                connection.commit()
+            result.updated = 1
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    def delete_event(self, event_id: int, actor: str) -> UpdateResult:
+        """Remove an event and its typed costs. Refused while purchases are linked to it."""
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                linked = connection.execute(
+                    "SELECT COUNT(*) FROM event_links WHERE event_id = ?", (event_id,)
+                ).fetchone()[0]
+                if linked:
+                    result.error = (
+                        f"{linked} purchase(s) are linked to this event. Move or unlink them first."
+                    )
+                    return result
+                connection.execute("DELETE FROM event_costs WHERE event_id = ?", (event_id,))
+                cursor = connection.execute("DELETE FROM events WHERE event_id = ?", (event_id,))
+                connection.commit()
+            result.updated = cursor.rowcount
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    def fetch_event_costs(self) -> pd.DataFrame:
+        return self._read("SELECT * FROM event_costs ORDER BY event_id, kind, added_at")
+
+    def add_event_cost(
+        self, event_id: int, kind: str, label: str, amount: float, actor: str
+    ) -> UpdateResult:
+        result = UpdateResult()
+        if kind not in ("estimate", "manual"):
+            result.error = f"Unknown cost kind: {kind}"
+            return result
+        try:
+            with self._connect() as connection:
+                if connection.execute("SELECT 1 FROM events WHERE event_id = ?", (event_id,)).fetchone() is None:
+                    result.error = "That event no longer exists."
+                    return result
+                cursor = connection.execute(
+                    "INSERT INTO event_costs (event_id, kind, label, amount, added_by) VALUES (?, ?, ?, ?, ?)",
+                    (int(event_id), kind, label.strip() or ("Estimate" if kind == "estimate" else "Cost"),
+                     round(float(amount), 2), actor),
+                )
+                connection.commit()
+            result.updated = int(cursor.lastrowid)
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    def delete_event_cost(self, cost_id: int, actor: str) -> UpdateResult:
+        result = UpdateResult()
+        try:
+            with self._connect() as connection:
+                cursor = connection.execute("DELETE FROM event_costs WHERE cost_id = ?", (int(cost_id),))
+                connection.commit()
+            result.updated = cursor.rowcount
+        except sqlite3.Error as exc:
+            result.error = str(exc)
+        return result
+
+    # --- Planner: sponsorships expected in a semester ------------------------
+
+    def fetch_planned_sponsorships(self, semester: str | None = None) -> pd.DataFrame:
+        if semester is None:
+            return self._read("SELECT * FROM planned_sponsorships ORDER BY semester, sponsorship_id")
+        return self._read(
+            "SELECT * FROM planned_sponsorships WHERE semester = ? ORDER BY sponsorship_id", (semester,)
+        )
+
+    def replace_planned_sponsorships(self, semester: str, rows: list[dict], actor: str) -> UpdateResult:
+        """The semester's whole sponsor list, as typed; `updated` is how many rows it now holds."""
+        result = UpdateResult()
+        semester = (semester or "").strip()
+        if not semester:
+            result.error = "Choose the semester these sponsorships are for."
+            return result
+        clean = []
+        for position, row in enumerate(rows, start=1):
+            sponsor = str(row.get("sponsor") or "").strip()
+            if not sponsor:
+                result.error = f"Row {position} needs a sponsor name."
+                return result
+            try:
+                amount = round(float(row.get("amount") or 0), 2)
+            except (TypeError, ValueError):
+                result.error = f"{sponsor}: the amount isn't a number."
+                return result
+            if amount < 0:
+                result.error = f"{sponsor}: the amount can't be negative."
+                return result
+            status = str(row.get("status") or "Pledged")
+            if status not in ("Pledged", "Paid"):
+                result.error = f"{sponsor}: status must be Pledged or Paid."
+                return result
+            paid_on = row.get("paid_on")
+            paid_on = None if paid_on is None or pd.isna(paid_on) or str(paid_on).strip() == "" else (
+                pd.to_datetime(paid_on).strftime("%Y-%m-%d")
+            )
+            notes = str(row.get("notes") or "").strip() or None
+            clean.append((semester, sponsor[:120], amount, status, paid_on, notes and notes[:300], actor))
+        try:
+            with self._connect() as connection:
+                connection.execute("DELETE FROM planned_sponsorships WHERE semester = ?", (semester,))
+                connection.executemany(
+                    "INSERT INTO planned_sponsorships (semester, sponsor, amount, status, paid_on, notes, updated_by) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    clean,
+                )
+                connection.commit()
+            result.updated = len(clean)
+        except (sqlite3.Error, ValueError) as exc:
             result.error = str(exc)
         return result
 
@@ -1805,8 +2356,8 @@ class SqliteBackend(Backend):
         with self._connect() as connection:
             tables = [
                 "spend_reviews", "llm_runs",
-                "committee_plan_lines", "budget_requests",
-                "transaction_flags",  # before transactions, which it references
+                "committee_plan_lines", "budget_requests", "planned_events",
+                "transaction_flags", "event_links",  # before transactions, which they reference
                 "receipts", "reimbursements", "transaction_audit", "statement_balances",
                 "merchants", "uploaded_files", "transactions", "committeebudgets",
                 "terms", "committees",
@@ -1882,9 +2433,25 @@ def _columns_for(query: str) -> list[str]:
             "line_id", "committee_id", "semester", "purpose", "amount", "note",
             "updated_by", "updated_at",
         ],
+        "events": [
+            "event_id", "external_key", "term_id", "event_date", "title", "start_time",
+            "end_time", "location", "owner", "audience", "status", "committee_id",
+            "attendance", "attendance_source", "description", "source", "calendar_id",
+            "synced_by", "synced_at", "edited_in_app", "edited_at",
+        ],
+        "event_links": ["transaction_id", "event_id", "linked_by", "linked_at"],
+        "event_costs": ["cost_id", "event_id", "kind", "label", "amount", "added_by", "added_at"],
+        "planned_sponsorships": [
+            "sponsorship_id", "semester", "sponsor", "amount", "status", "paid_on", "notes",
+            "updated_by", "updated_at",
+        ],
         "budget_requests": [
             "request_id", "committee_id", "semester", "amount", "reason",
             "requested_by", "requested_at",
+        ],
+        "planned_events": [
+            "planned_event_id", "committee_id", "semester", "event_date", "title", "kind",
+            "estimated_cost", "expected_attendance", "note", "updated_by", "updated_at",
         ],
     }
     lowered = query.lower()

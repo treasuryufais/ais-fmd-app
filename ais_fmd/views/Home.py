@@ -1,14 +1,21 @@
 """
-Home: now and next.
+Home: now and next, then the term in detail.
 
-PEBBLE. Home only looks forward from today. Every chart answers a question a
-treasurer acts on this week; nothing here repeats a Dashboard chart.
+Home and Dashboard were merged on 2026-11-08. The top half looks forward from
+today -- every chart answers a question a treasurer acts on this week:
 
   Cash runway          will the balance stay above the reserve through term end?
   Spend pace           are we spending faster than the budget allows?
-  Committees to watch  who is furthest ahead of the calendar, and when do they run out?
   Dues                 are members paying faster than the same term last year?
   Needs you            alerts and data-quality issues, one list, each opens its page
+
+Below it, "This term in detail" is the former Dashboard (ui/term_analysis.py):
+income, expenses and net against last term, every committee's budget, and where
+the money went, with its own semester and committee pickers.
+
+2026-11-13: "Committees to watch" is gone (Committee budgets below shows every
+committee the same way), the term appears once in the header instead of twice,
+and explanations moved from captions into "?" tooltips.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from __future__ import annotations
 from datetime import datetime
 
 import streamlit as st
+from html import escape
 
 from ais_fmd import auth, nav
 from ais_fmd.data import repositories as repo
@@ -24,14 +32,17 @@ from ais_fmd.domain import dues as dues_domain
 from ais_fmd.domain import pace
 from ais_fmd.domain.money import format_currency
 from ais_fmd.domain.terms import default_semester, ordered_semesters, term_id_for_semester
-from ais_fmd.ui import charts, shell
+from ais_fmd.ui import charts, reconcile_tab, shell, term_analysis
 
 # Session keys of the hub switchers (see the *Hub.py views), so an action can
 # open a hub on the right view.
+_TODO_ROWS = 4  # rows shown in Needs you before "N more"
+
 _HUB_KEYS = {
     "ais_fmd/views/TransactionsHub.py": "transactions_hub",
     "ais_fmd/views/AlertsHub.py": "alerts_hub",
 }
+_TREASURY = "ais_fmd/views/Treasury.py"
 
 identity = auth.current_user()
 
@@ -40,8 +51,11 @@ identity = auth.current_user()
 _OPENABLE = {page[0] for page in nav.VP_PAGES} if identity.committee_scoped else None
 
 
+_HERE = "ais_fmd/views/Home.py"
+
+
 def _can_open(page: str) -> bool:
-    return _OPENABLE is None or page in _OPENABLE
+    return page == _HERE or _OPENABLE is None or page in _OPENABLE
 
 
 shell.environment_banner()
@@ -70,14 +84,14 @@ prior = pace.equivalent_prior(bundle.terms, semester)
 
 hour = datetime.now().hour
 greeting = "morning" if hour < 12 else "afternoon" if hour < 18 else "evening"
-head, term_progress = st.columns([3, 1], vertical_alignment="bottom")
-with head:
-    shell.page_header(
-        f"Good {greeting}, {identity.role.label}",
-        f"{semester} · week {clock.week} of {clock.weeks}",
-    )
-with term_progress:
-    st.progress(clock.fraction, text=f"{semester} · day {clock.day} of {clock.length}")
+shell.page_header(
+    f"Good {greeting}, {identity.role.label}",
+    context=(
+        f'{semester} · week {clock.week} of {clock.weeks}'
+        f'<span class="ais-term-bar" title="Day {clock.day} of {clock.length}">'
+        f'<i style="width:{clock.fraction:.0%}"></i></span>{clock.fraction:.0%} through'
+    ),
+)
 
 main, side = st.columns([2.6, 1], gap="medium")
 
@@ -96,24 +110,21 @@ with main:
             f"Projected {clock.end:%b %d}",
             runway.end_mid,
             delta=runway.end_mid - pace.RESERVE_FLOOR,
+            help=(
+                f"{runway.anchor}. Likely range at term end {format_currency(runway.end_low)} to "
+                f"{format_currency(runway.end_high)}. The change shown is against the "
+                f"{format_currency(pace.RESERVE_FLOOR)} reserve."
+            ),
         )
         shell.chart(
             charts.cash_runway(runway, clock, reserve=pace.RESERVE_FLOOR),
             key="home_runway",
             reveal="left",
         )
-        shell.say(
-            f"{runway.anchor}. Likely range at term end {format_currency(runway.end_low)} "
-            f"to {format_currency(runway.end_high)}; the delta above is against the "
-            f"{format_currency(pace.RESERVE_FLOOR)} reserve.",
-            caption=True,
-        )
-
-    pace_column, watch_column = st.columns(2, gap="medium")
 
     # --- Spend pace ----------------------------------------------------------
 
-    with pace_column, shell.card("pace", order=2):
+    with shell.card("pace", order=2):
         budget_total = pace.budget_totals(bundle.budgets, bundle.terms).get(semester, 0.0)
         spent = pace.cumulative_by_day(
             bundle.transactions, bundle.terms, semester, measure="expenses", through_day=clock.day
@@ -134,23 +145,19 @@ with main:
             status = shell.pill("Ahead of pace", "approaching")
         else:
             status = shell.pill(f"{ratio:.1f}× pace", "over")
-        shell.heading("Spend pace", status)
+        shell.heading(
+            "Spend pace", status,
+            help=(
+                "Spending so far this term (black) against "
+                + (f"{prior} at the same point (grey) and " if prior else "")
+                + "the term's budget spread evenly over the term (dashed). On pace means within 5% of the dashed line."
+            ),
+        )
         shell.chart(
             charts.spend_pace(spent, prior_spent, clock, budget=budget_total, prior_label=prior),
             key="home_pace",
             reveal="left",
         )
-
-    # --- Committees to watch -------------------------------------------------
-
-    with watch_column, shell.card("watch", order=3):
-        committees = pace.committee_pace(bundle.transactions, bundle.budgets, bundle.terms, clock)
-        shell.heading("Committees to watch")
-        shell.chart(charts.committee_pace(committees, clock, rows=3), key="home_watch")
-        if not committees.empty and _can_open("ais_fmd/views/Dashboard.py") and st.button(
-            f"All {len(committees)} committees", key="home_all_committees", icon=":material/arrow_forward:"
-        ):
-            st.switch_page("ais_fmd/views/Dashboard.py")
 
 # --- Dues --------------------------------------------------------------------
 
@@ -176,6 +183,11 @@ with side:
             f"{summary.unique_payers:,} / {roster_size:,} paid" if roster_size else f"{summary.unique_payers:,} paid",
             delta=delta,
             currency=False,
+            help=(
+                "Members who have paid this term"
+                + (f", out of {roster_size:,} on the roster" if roster_size else "")
+                + (f". The line is dues collected by day; grey is {prior}." if prior else ". The line is dues collected by day.")
+            ),
         )
         shell.chart(charts.dues_curve(curve, prior_curve, clock, prior_label=prior), key="home_dues")
         shell.say(f"{format_currency(collected)} collected this term.", caption=True)
@@ -193,13 +205,13 @@ with side:
         ):
             code = alert.code.lower()
             if "budget" in code:
-                target = ("ais_fmd/views/Dashboard.py", None)
+                target = (_HERE, None)  # the committee budgets section below
             elif "backlog" in code or "uncateg" in code:
-                target = ("ais_fmd/views/TransactionsHub.py", "Review Queue")
+                target = ("ais_fmd/views/TransactionsHub.py", "Needs attention")
             elif "reconcil" in code:
                 target = ("ais_fmd/views/Reconciliation.py", None)
             elif "stale" in code:
-                target = ("ais_fmd/views/TransactionsHub.py", "Import")
+                target = (_TREASURY, reconcile_tab.TAB_LABEL)
             else:
                 target = ("ais_fmd/views/AlertsHub.py", "Alerts & Reports")
             icon = {"critical": ":material/error:", "warning": ":material/warning:"}.get(
@@ -208,29 +220,62 @@ with side:
             items.append((alert.title, alert.detail, icon, *target))
         # Pages a VP cannot open are not offered; their alerts are not theirs to work.
         items = [item for item in items if _can_open(item[3])]
-        if identity.can(auth.Role.TREASURER):
+        # Data-quality chores are the treasurer's to-do list. A read-only President
+        # sees the alerts (the state of things) but is not handed the chores.
+        if identity.can(auth.Role.TREASURER) and not identity.read_only:
             for issue in repo.run_quality_checks():
                 if issue.severity in {"critical", "high", "medium"}:
                     items.append((
-                        issue.title,
-                        f"{issue.count:,} row(s)",
+                        f"{issue.count:,} · {issue.title}",
+                        f"{issue.severity} · open Data Quality to see the rows",
                         ":material/rule:",
                         "ais_fmd/views/AlertsHub.py",
                         "Data Quality",
                     ))
 
         shell.heading(
-            "Needs you",
+            "Needs you" if not identity.read_only else "Worth knowing",
             shell.pill(str(len(items)), "over" if items else "on track"),
         )
         if not items:
             shell.empty_state("Nothing needs you", "Alerts and data-quality checks are clear.")
-        for index, (title, detail, icon, page, tab) in enumerate(items[:5]):
+        # One line per item, a few at most: the list used to push the rest of the
+        # page out of view. The detail sits in the row's tooltip.
+        for index, (title, detail, icon, page, tab) in enumerate(items[:_TODO_ROWS]):
             with st.container(key=f"todo-{index}"):
-                if st.button(shell.money_safe(title), key=f"todo_button_{index}", icon=icon, type="tertiary"):
+                glyph = icon.removeprefix(":material/").removesuffix(":")
+                if page == _HERE:
+                    # Budget alerts: the chart that explains them is further down.
+                    shell.html(
+                        f'<a class="ais-todo-link" href="#{term_analysis.ANCHOR}" target="_self" '
+                        f'title="{escape(detail)}">'
+                        f'<span class="material-symbols-rounded">{glyph}</span>{escape(title)}</a>'
+                    )
+                elif identity.read_only:
+                    shell.html(
+                        f'<div class="ais-todo-link" title="{escape(detail)}">'
+                        f'<span class="material-symbols-rounded">{glyph}</span>{escape(title)}</div>'
+                    )
+                elif st.button(
+                    shell.money_safe(title), key=f"todo_button_{index}", icon=icon, type="tertiary", help=detail,
+                ):
                     if tab and page in _HUB_KEYS:
                         st.session_state[_HUB_KEYS[page]] = tab
+                    elif tab and page == _TREASURY:
+                        reconcile_tab.open_treasury(tab, reconcile_tab.BANK)
                     st.switch_page(page)
-                shell.say(detail, caption=True)
-        if len(items) > 5:
-            shell.say(f"{len(items) - 5} more on Alerts & Data Quality.", caption=True)
+        if len(items) > _TODO_ROWS:
+            rest = len(items) - _TODO_ROWS
+            # A button, not st.page_link: the page runs on its own in tests, where
+            # no navigation has registered the hub.
+            if _can_open("ais_fmd/views/AlertsHub.py"):
+                with st.container(key="todo-more"):
+                    if st.button(f"{rest} more on Alerts & Data Quality", key="todo_more",
+                                 icon=":material/arrow_forward:", type="tertiary"):
+                        st.switch_page("ais_fmd/views/AlertsHub.py")
+            else:
+                shell.say(f"{rest} more on Alerts & Data Quality.", caption=True)
+
+# --- This term in detail (the former Dashboard) --------------------------------
+
+term_analysis.render(bundle, semesters)

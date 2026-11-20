@@ -431,11 +431,11 @@ def test_review_queue_never_offers_a_row_that_already_has_a_committee(seeded_db,
 
 
 def test_treasury_tabs_all_render(seeded_db, use_db):
-    """Treasury is 467 lines doing upload, budgets, terms, export and locking."""
+    """Treasury does budgets, terms, reconciling an uploaded file, export and locking."""
     use_db(seeded_db)
     app = run_view(VIEWS / "Treasury.py")
     assert_clean(app, "Treasury on first render")
-    assert app.tabs, "Treasury renders no tabs"
+    assert [tab.label for tab in app.tabs] == ["Budgets", "Terms", "Reconcile", "Export"]
 
 
 def test_planner_inputs_accept_edge_values(seeded_db, use_db):

@@ -1,4 +1,10 @@
-"""Module M21 -- membership roster upload and dues reconciliation."""
+"""
+Module M21 -- the membership roster and dues reconciliation.
+
+The roster arrives by the automatic sync. Its upload ("Upload a membership
+list") moved to Treasury -> Reconcile on 2026-11-13, where a file is compared
+with the stored roster and only the ticked differences are saved.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +13,6 @@ import streamlit as st
 
 from ais_fmd import auth
 from ais_fmd.data import repositories as repo
-from ais_fmd.domain import dues as dues_domain
 from ais_fmd.domain import roster as roster_domain
 from ais_fmd.domain.money import format_currency
 from ais_fmd.domain.terms import (
@@ -23,9 +28,9 @@ shell.environment_banner()
 auth.read_only_notice(identity)
 shell.page_header(
     "Roster & dues reconciliation",
-    "Upload the membership list, then compare it against who has actually paid. "
-    "Payments made on someone else's behalf are credited to the person the memo "
-    "names, not the person who sent the money.",
+    "The membership list against who has actually paid. Payments made on someone "
+    "else's behalf are credited to the person the memo names, not the person who "
+    "sent the money. To check a membership file against the roster, use Treasury → Reconcile.",
 )
 
 bundle = repo.load_bundle()
@@ -45,138 +50,18 @@ selected = st.selectbox(
 terms = bundle.terms
 term_id = term_id_for_semester(terms, selected) or ""
 
-# --- Upload ------------------------------------------------------------------
-
-with st.expander("Upload a membership list", expanded=False):
-    shell.say(
-        "A CSV or Excel export of the membership sheet. It needs a name column "
-        "— either one full-name column, or separate first and last name columns. "
-        "Email and UFID are picked up when present and just make the chase list "
-        "more useful. Columns are matched by their heading, never by position."
-    )
-    uploaded = st.file_uploader(
-        "Membership list",
-        type=["csv", "xlsx", "xls"],
-        key="roster_upload",
-    )
-
-    if uploaded is not None:
-        try:
-            if uploaded.name.lower().endswith(".csv"):
-                raw = pd.read_csv(uploaded)
-            else:
-                raw = pd.read_excel(uploaded)
-        except Exception as exc:  # noqa: BLE001 - a bad file must not crash the page
-            raw = None
-            shell.error_state("Could not read that file", f"{type(exc).__name__}: {exc}")
-
-        if raw is not None:
-            parsed = roster_domain.parse_roster(raw)
-            for warning in parsed.warnings:
-                shell.notify("warning", warning)
-            for error in parsed.errors:
-                shell.error_state("Roster not imported", error)
-
-            if parsed.ok:
-                shell.notify(
-                    "info",
-                    f"Read **{len(parsed.members)}** members from column "
-                    f"`{parsed.name_column}`.",
-                )
-                shell.dataframe(
-                    pd.DataFrame(
-                        [
-                            {"Name": m.full_name, "Email": m.email, "UFID": m.ufid}
-                            for m in parsed.members[:10]
-                        ]
-                    ),
-                    hide_index=True,
-                )
-                shell.say(
-                    f"Saving replaces the whole roster for **{selected}**. A name "
-                    "not in this file is treated as having left.",
-                    caption=True,
-                )
-                if st.button(f"Save roster for {selected}", type="primary", disabled=identity.read_only):
-                    # `save_result`, not `result`: see the note on `alias_result`
-                    # below. `result` is the page's reconciliation object.
-                    save_result = repo.replace_members(
-                        term_id,
-                        [
-                            {
-                                "full_name": m.full_name,
-                                "match_key": m.match_key,
-                                "alt_keys": m.alt_keys,
-                                "preferred_name": m.preferred_name,
-                                "claims_paid": m.claims_paid,
-                                "email": m.email,
-                                "ufid": m.ufid,
-                            }
-                            for m in parsed.members
-                        ],
-                        uploaded.name,
-                        identity.email,
-                    )
-                    if save_result.ok:
-                        repo.invalidate()
-                        shell.flash(
-                            "success",
-                            f"Saved {save_result.updated} members to {selected}.",
-                        )
-                        st.rerun()
-                    else:
-                        shell.error_state(
-                            "Could not save the roster", save_result.error or ""
-                        )
-
 # --- Reconciliation ----------------------------------------------------------
 
 stored = repo.load_members(term_id)
 if stored.empty:
     shell.empty_state(
         f"No roster stored for {selected}",
-        "Upload a membership list above to see who has not paid.",
+        "It arrives by the sync, or upload a membership list on Treasury → Reconcile.",
     )
     st.stop()
 
-def _text(value: object) -> str:
-    """
-    A DB column value as a string, NULL-safe.
-
-    `value or ""` does not fall back on a pandas NaN -- NaN is truthy, so it
-    returns the NaN, and a caller wrapping that in `str()` gets the literal
-    string "nan" rendered on the page instead of a blank. Every optional TEXT
-    column read from SQLite needs this, not just `value or ""`.
-    """
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return ""
-    return str(value)
-
-
-def _stored_member(row: dict) -> roster_domain.Member:
-    alt_keys = tuple(
-        part.strip() for part in _text(row.get("alt_keys")).split(",") if part.strip()
-    )
-    return roster_domain.Member(
-        full_name=_text(row.get("full_name")),
-        match_key=_text(row.get("match_key")),
-        alt_keys=alt_keys,
-        preferred_name=_text(row.get("preferred_name")),
-        claims_paid=bool(row.get("claims_paid") or 0),
-        email=_text(row.get("email")),
-        ufid=_text(row.get("ufid")),
-    )
-
-
-members = [_stored_member(row) for row in stored.to_dict("records")]
-
-schedule = dues_domain.schedule_from_terms(terms)
-paid_rows = dues_domain.dues_transactions(bundle.transactions, schedule)
-if not paid_rows.empty:
-    from ais_fmd.domain.terms import attach_semester
-
-    tagged = attach_semester(paid_rows, terms)
-    paid_rows = tagged[tagged["Semester"].astype(str) == str(selected)]
+members = roster_domain.members_from_rows(stored)
+paid_rows = roster_domain.semester_dues_rows(bundle.transactions, terms, selected)
 
 result = roster_domain.reconcile(paid_rows, members)
 summary = result.summary()
@@ -251,13 +136,14 @@ with suggested_tab:
     if not suggestions:
         shell.notify("success", "No near-misses to resolve.")
     else:
-        shell.say(
-            "Each row is an unpaid member next to a payment that names them with "
+        shell.heading(
+            "Unpaid members with a near-miss payment",
+            help="Each row is an unpaid member next to a payment that names them with "
             "a different spelling — a shortened first name, or a stray plural. "
             "Nothing here is credited automatically: a matcher loose enough to "
             "accept these is loose enough to credit the wrong person's dues. "
             "Confirming one teaches the roster that spelling permanently, so the "
-            "next statement matches it directly."
+            "next statement matches it directly.",
         )
         for payment, member in suggestions:
             alias = roster_domain.suggested_alias(payment, member)
@@ -293,12 +179,13 @@ with disputed_tab:
             "success", "Nobody claims to have paid without a matching payment."
         )
     else:
-        shell.say(
-            "These members ticked the box on the membership form saying they had "
+        shell.heading(
+            "Says they paid, no payment found",
+            help="These members ticked the box on the membership form saying they had "
             "completed the dues transaction, but no payment matches them. Each is "
             "one of three things: paid by a method this statement does not cover "
             "(cash, or the Venmo account being retired), paid under a name the "
-            "matcher could not connect, or did not actually pay."
+            "matcher could not connect, or did not actually pay.",
         )
         shell.dataframe(disputed, hide_index=True)
         st.download_button(
@@ -336,9 +223,10 @@ with unmatched_tab:
     if unmatched.empty:
         shell.notify("success", "Every dues payment was matched to a member.")
     else:
-        shell.say(
-            "These payments could not be tied to anyone on the roster. Nothing "
-            "is wrong with the money — only the attribution is missing."
+        shell.heading(
+            "Payments not tied to a member",
+            help="These payments could not be tied to anyone on the roster. Nothing "
+            "is wrong with the money — only the attribution is missing.",
         )
         shell.dataframe(unmatched, hide_index=True)
 
@@ -347,9 +235,10 @@ with flags_tab:
     if not repeats:
         shell.notify("success", "No member was credited by more than one payment.")
     else:
-        shell.say(
-            "Usually an instalment or a correction, occasionally a genuine "
-            "double charge worth refunding."
+        shell.heading(
+            "Members credited by more than one payment",
+            help="Usually an instalment or a correction, occasionally a genuine "
+            "double charge worth refunding.",
         )
         shell.dataframe(
             pd.DataFrame(

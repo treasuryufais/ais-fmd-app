@@ -30,7 +30,7 @@ from ais_fmd.data import repositories as repo
 from ais_fmd.domain import budgets as budget_domain
 from ais_fmd.domain import committee_report, exports, vp_history
 from ais_fmd.domain import reimbursements as reimb
-from ais_fmd.domain import vp_metrics
+from ais_fmd.domain import spend_kinds, vp_metrics
 from ais_fmd.domain.money import format_currency
 from ais_fmd.domain.terms import (
     attach_semester,
@@ -89,7 +89,11 @@ with controls[0]:
         )
     else:
         committee_id = identity.committee_id
-        st.markdown(f"**Committee**  \n{vp_committees.title_for(committee_id)}")
+        shell.html(
+            "**Committee**"
+            + shell.tip("You are seeing only your own committee. Treasurers can view any committee.")
+            + f"  \n{vp_committees.title_for(committee_id)}"
+        )
 
 # A committee can own several budget lines. Everything below is about all of them
 # together; an unmapped committee is just its own single line.
@@ -103,11 +107,6 @@ with controls[1]:
         semesters,
         index=default_semester_index(bundle.transactions, bundle.terms),
         key="officer_semester",
-    )
-
-if not can_choose:
-    st.caption(
-        "You are seeing only your own committee. Treasurers can view any committee."
     )
 
 # How current the figures are, so a VP knows whether last week's charges are in.
@@ -154,34 +153,39 @@ elapsed = vp_metrics.term_elapsed_percent(bundle.terms, semester)
 tone = committee_panels.tone_for(status)
 remaining_tone = "over" if position["remaining"] < 0 else tone
 
+# Each number appears once (2026-11-09). The bar card on the right carries what
+# was spent and the share used, against how much of the term has gone; the tiles
+# carry what the bar cannot: the budget, what is left, and where the current
+# pace ends up. The old "Spent" and "Used" tiles and the pace sentence repeated
+# the bar.
+projected = vp_metrics.projected_spend(position["spent"], elapsed) if elapsed else None
+left_at_end = None if projected is None else position["budget"] - projected
+def _dollars(amount: float) -> str:
+    # Whole dollars: three tiles side by side cut cents-wide figures off ("$5,370....").
+    return f"{'-' if amount < 0 else ''}${abs(amount):,.0f}"
+
+
+tiles = [
+    {"label": "Budget", "value": _dollars(position["budget"]), "currency": False},
+    {"label": "Left now", "value": _dollars(position["remaining"]), "currency": False, "tone": remaining_tone},
+]
+if left_at_end is not None:
+    tiles.append({
+        "label": "Left at term end" if left_at_end >= 0 else "Over at term end",
+        "value": _dollars(abs(left_at_end)),
+        "currency": False,
+        "tone": "over" if left_at_end < 0 else tone,
+        "help": "Assumes you keep spending at the pace you have so far.",
+    })
 tiles_column, bar_column = st.columns([3, 1.35], gap="medium")
 with tiles_column:
-    shell.metric_row(
-        [
-            {"label": "Budget", "value": position["budget"]},
-            # No change-vs-last-term arrow: VPs read a green down-arrow as
-            # "spending went down" (#9). The tile's colour carries the status.
-            {"label": "Spent", "value": position["spent"], "tone": tone},
-        ]
-    )
-    shell.metric_row(
-        [
-            {"label": "Remaining", "value": position["remaining"], "tone": remaining_tone},
-            {
-                "label": "Used",
-                "value": "—" if percent is None else f"{percent:.0f}%",
-                "currency": False,
-                "tone": tone,
-            },
-        ]
-    )
+    # shell.metric_row, with each tile's "?" (metric_row doesn't pass help on).
+    for column, tile in zip(st.columns(len(tiles)), tiles):
+        shell.metric(column, tile["label"], tile["value"], currency=False,
+                     tone=tile.get("tone"), help=tile.get("help"))
 with bar_column:
     with shell.card("spend-bar", order=2):
         shell.html(committee_panels.spend_bar(position, status, elapsed))
-
-pace = vp_metrics.pace_sentence(position, elapsed, semester)
-if pace:
-    shell.say(pace, caption=True)
 
 if status == "over":
     shell.notify(
@@ -237,27 +241,31 @@ flag_ui.updates_panel(
 flow_column, pace_column = st.columns(2, gap="large")
 
 with flow_column:
-    st.subheader("Where the money went")
-    payees = vp_metrics.payee_split(scoped)
-    if payees.empty:
+    # By kind of spending (food, bar tabs, supplies...), not by payee: forty
+    # restaurants each with 2% told a VP nothing (2026-11-09).
+    spending = scoped if scoped.empty else scoped[~budget_domain.is_transfer(scoped)]
+    kinds = spend_kinds.kind_split(spending)
+    stores = [] if kinds.empty else [k for k in kinds["Kind"] if k in set(spend_kinds.BIG_STORES.values())]
+    st.subheader(
+        "Where the money went",
+        help="Grouped by what the merchant sells."
+        + (f" {', '.join(stores)} {'is' if len(stores) == 1 else 'are'} shown by name: a big-store "
+           "receipt could be food, drinks or supplies, and the bank doesn't say which."
+           if stores else ""),
+    )
+    if kinds.empty:
         shell.empty_state("Nothing spent yet", f"No charges are booked to {chosen_name} in {semester}.")
     else:
-        with shell.card("committee-pareto", order=3):
-            shell.html(
-                committee_panels.pareto(
-                    vp_metrics.pareto_rows(payees, position["budget"]),
-                    position["budget"],
-                    position["spent"],
-                )
-            )
-        shell.say(
-            "Your budget as one bar, split by who was paid, biggest first; the hatched "
-            "part is what is left. Running is the share of spending covered so far.",
-            caption=True,
+        shell.chart(
+            committee_charts.kind_bars(kinds, committee_charts.committee_color(committee_id)),
+            key="committee_kinds",
         )
 
 with pace_column:
-    st.subheader("Spending pace")
+    st.subheader(
+        "Spending pace",
+        help="Solid: what you have spent. Dashed: an even spend across the term, so above it means ahead of pace.",
+    )
     term_window = date_range_for_semester(bundle.terms, semester)
     if term_window is None:
         shell.empty_state("No term dates on record", f"{semester} has no start and end dates set.")
@@ -273,11 +281,6 @@ with pace_column:
         )
         pace_figure.update_layout(height=360)
         shell.chart(pace_figure, key="committee_pace")
-        shell.say(
-            "Solid: what you have spent. Dashed: an even spend across the term, so "
-            "above it means ahead of pace.",
-            caption=True,
-        )
 
 income_split = budget_domain.categorize_flow(scoped, budget_domain.INCOME)
 
@@ -291,8 +294,8 @@ if len(line_names) > 1:
     shell.dataframe(
         by_line[["Budget line", "Budget", "Spent", "% Spent", "Status"]],
         column_config={
-            "Budget": st.column_config.NumberColumn(format="$%.2f"),
-            "Spent": st.column_config.NumberColumn(format="$%.2f"),
+            "Budget": st.column_config.NumberColumn(format="dollar"),
+            "Spent": st.column_config.NumberColumn(format="dollar"),
             "% Spent": st.column_config.TextColumn(width="small"),
             "Status": st.column_config.TextColumn(width="small"),
         },
@@ -327,7 +330,13 @@ if past_terms is not None:
     tag = vp_history.VERDICT_TAGS.get(usual["verdict"]) if usual else None
     kind = {"more": "approaching", "same": "on track", "less": "on track"}.get(usual["verdict"] if usual else "")
     st.markdown(
-        "**This term vs. past terms**" + (f" &nbsp;{shell.pill(tag, kind)}" if tag else ""),
+        "**This term vs. past terms**"
+        + shell.tip(
+            "Each bar is how much of that term's budget was spent by the same point in the term, "
+            "measured against that term's own budget, as of the earlier of today and the latest "
+            "charge on record. In See the numbers, the black mark on each bar is where this term is now."
+        )
+        + (f" &nbsp;{shell.pill(tag, kind)}" if tag else ""),
         unsafe_allow_html=True,
     )
     sentence = vp_history.short_sentence(past_terms)
@@ -342,18 +351,11 @@ if past_terms is not None:
         ),
         key="committee_same_point",
     )
-    st.caption(
-        f"Each bar is how much of that term's budget was spent by the same point: "
-        f"{past_terms.elapsed_percent:.0f}% of the way through the term."
-    )
+    st.caption(f"Measured at the same point: {past_terms.elapsed_percent:.0f}% of the way through the term.")
     with st.expander("See the numbers"):
         with shell.card("committee-compare", order=4):
             shell.html(committee_panels.comparison_table(past_terms, status))
-        st.caption(
-            f"Measured as of {past_terms.as_of:%b} {past_terms.as_of.day} (the earlier of today and "
-            "the latest charge on record). Each term is measured against its own budget. "
-            "The black mark on each bar is where this term is now."
-        )
+        st.caption(f"Measured as of {past_terms.as_of:%b} {past_terms.as_of.day}.")
 
 st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
 
@@ -384,10 +386,7 @@ if burn_column is not None:
             burn["Note"].isin({"Projected to exhaust before term end", "Already over budget"})
         ]
         if at_risk.empty:
-            shell.empty_state(
-                "Nothing projected to overrun",
-                "You finish within budget at the current pace.",
-            )
+            st.caption("Nothing projected to overrun: at the current pace you finish within budget.")
         else:
             compact = at_risk.copy()
             compact["Risk"] = compact["Note"].map(
@@ -398,7 +397,7 @@ if burn_column is not None:
                     columns={"Committee_Name": "Budget line", "Daily Burn": "Per day"}
                 ),
                 column_config={
-                    "Per day": st.column_config.NumberColumn(format="$%.2f"),
+                    "Per day": st.column_config.NumberColumn(format="dollar"),
                     "Projected Exhaustion": st.column_config.DateColumn(format="MMM D, YYYY"),
                     "Risk": st.column_config.TextColumn(width="small"),
                 },
@@ -439,7 +438,7 @@ st.markdown("#### Reimbursements for this committee")
 if requests.empty:
     shell.empty_state(
         "No requests raised",
-        "Submit one from the Reimbursements page — it will be pre-assigned to this committee.",
+        "Ask the treasurer if someone on your committee is owed money back.",
     )
 else:
     mine_requests = requests[requests["committee_id"].isin(line_ids)]
@@ -457,7 +456,7 @@ else:
         shell.dataframe(
             reimb.display_frame(mine_requests),
             column_config={
-                "Amount": st.column_config.NumberColumn(format="$%.2f"),
+                "Amount": st.column_config.NumberColumn(format="dollar"),
                 "Submitted": st.column_config.DatetimeColumn(format="MMM D, YYYY"),
             },
         )

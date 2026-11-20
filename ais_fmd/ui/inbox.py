@@ -16,56 +16,58 @@ import streamlit as st
 from ais_fmd.ui import shell, theme
 from ais_fmd.ui import txn_display as show
 
-_CSS = f"""
+def _css(t) -> str:
+    # Read at draw time (theme.tokens()), so dark mode gets dark values.
+    return f"""
 <style>
-.ais-status {{ background:{theme.CARD}; border-radius:24px; padding:18px 20px 16px; box-shadow:{theme.SHADOW};
+.ais-status {{ background:{t.CARD}; border-radius:24px; padding:18px 20px 16px; box-shadow:{t.SHADOW};
   display:flex; flex-direction:column; gap:12px; margin-bottom:8px; }}
 .ais-status-top {{ display:flex; flex-wrap:wrap; justify-content:space-between; gap:8px; font-size:14px; }}
 .ais-status-top b {{ font-weight:600; }}
-.ais-status-top span {{ color:{theme.INK_SOFT}; }}
+.ais-status-top span {{ color:{t.INK_SOFT}; }}
 .ais-status ol {{ list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }}
 .ais-status li {{ display:flex; flex-direction:column; gap:10px; min-width:0; margin:0; }}
-.ais-status .bar {{ display:block; height:8px; border-radius:999px; background:{theme.GRID}; overflow:hidden; }}
-.ais-status .bar i {{ display:block; height:8px; border-radius:999px; background:{theme.ACCENT}; }}
-.ais-status .done .bar {{ background:{theme.INK}; }}
+.ais-status .bar {{ display:block; height:8px; border-radius:999px; background:{t.GRID}; overflow:hidden; }}
+.ais-status .bar i {{ display:block; height:8px; border-radius:999px; background:{t.ACCENT}; }}
+.ais-status .done .bar {{ background:{t.INK}; }}
 .ais-status .label {{ display:flex; align-items:flex-start; gap:10px; min-width:0; }}
 .ais-status .dot {{ flex:none; width:26px; height:26px; border-radius:50%; display:inline-flex; align-items:center;
-  justify-content:center; font-size:13px; font-weight:700; background:{theme.SUBTLE}; color:{theme.INK_SOFT}; }}
-.ais-status .done .dot {{ background:{theme.INK}; color:#fff; }}
-.ais-status .active .dot {{ background:{theme.ACCENT}; color:#fff; }}
+  justify-content:center; font-size:13px; font-weight:700; background:{t.SUBTLE}; color:{t.INK_SOFT}; }}
+.ais-status .done .dot {{ background:{t.INK}; color:{t.CARD}; }}
+.ais-status .active .dot {{ background:{t.ACCENT}; color:#fff; }}
 .ais-status .name {{ font-weight:600; line-height:1.3; }}
-.ais-status .sub {{ font-size:13px; color:{theme.INK_SOFT}; line-height:1.35; }}
-.ais-status .needs .sub {{ color:{theme.ACCENT_DIM}; font-weight:700; }}
+.ais-status .sub {{ font-size:13px; color:{t.INK_SOFT}; line-height:1.35; }}
+.ais-status .needs .sub {{ color:{t.ACCENT_DIM}; font-weight:700; }}
 @media (max-width: 640px) {{ .ais-status ol {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} }}
 
 .ais-row-top {{ display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px; }}
 .ais-row-top .amt {{ font-size:20px; font-weight:700; }}
 .ais-row-top .amt.in {{ color:#11683A; }}
 .ais-row-top .who {{ font-size:17px; font-weight:600; }}
-.ais-row-top .when {{ font-size:14px; color:{theme.INK_SOFT}; }}
-.ais-row-card {{ font-size:14px; color:{theme.INK_SOFT}; margin-top:2px; }}
+.ais-row-top .when {{ font-size:14px; color:{t.INK_SOFT}; }}
+.ais-row-card {{ font-size:14px; color:{t.INK_SOFT}; margin-top:2px; }}
 .ais-row-why {{ font-size:14px; margin-top:6px; display:flex; flex-wrap:wrap; align-items:center; gap:8px; }}
 .ais-tag {{ display:inline-block; border-radius:999px; padding:2px 10px; font-size:13px; font-weight:600;
-  background:{theme.WARNING_TINT}; color:#7A4505; }}
-.ais-tag.ok {{ background:{theme.POSITIVE_TINT}; color:#11683A; }}
-.ais-tag.plain {{ background:{theme.SUBTLE}; color:{theme.INK}; }}
+  background:{t.WARNING_TINT}; color:#7A4505; }}
+.ais-tag.ok {{ background:{t.POSITIVE_TINT}; color:#11683A; }}
+.ais-tag.plain {{ background:{t.SUBTLE}; color:{t.INK}; }}
 .ais-row-done {{ display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; font-size:15px; }}
-.ais-meter {{ display:flex; align-items:center; gap:10px; font-size:13px; color:{theme.INK_SOFT}; }}
-.ais-meter .bar {{ flex:0 0 160px; height:6px; border-radius:999px; background:{theme.GRID}; overflow:hidden; display:block; }}
-.ais-meter .bar i {{ display:block; height:6px; background:{theme.INK}; }}
-.ais-meter b {{ color:{theme.INK}; font-weight:600; }}
-.st-key-ais-savebar {{ position:sticky; bottom:12px; z-index:20; background:{theme.INK}; color:#fff;
+.ais-meter {{ display:flex; align-items:center; gap:10px; font-size:13px; color:{t.INK_SOFT}; }}
+.ais-meter .bar {{ flex:0 0 160px; height:6px; border-radius:999px; background:{t.GRID}; overflow:hidden; display:block; }}
+.ais-meter .bar i {{ display:block; height:6px; background:{t.INK}; }}
+.ais-meter b {{ color:{t.INK}; font-weight:600; }}
+.st-key-ais-savebar {{ position:sticky; bottom:12px; z-index:20; background:{t.INK}; color:{t.CARD};
   border-radius:24px; padding:10px 14px 10px 22px; box-shadow:0 8px 24px rgba(17,17,17,.18); }}
-.st-key-ais-savebar p, .st-key-ais-savebar strong {{ color:#fff; margin:0; }}
+.st-key-ais-savebar p, .st-key-ais-savebar strong {{ color:{t.CARD}; margin:0; }}
 .ais-glance {{ display:flex; flex-wrap:wrap; gap:8px; }}
-.ais-glance span {{ background:{theme.SUBTLE}; border-radius:999px; padding:5px 12px; font-size:14px; }}
+.ais-glance span {{ background:{t.SUBTLE}; border-radius:999px; padding:5px 12px; font-size:14px; }}
 </style>
 """
 
 
 def styles() -> None:
     """The CSS for everything in this module; call once per page, before drawing."""
-    st.markdown(_CSS, unsafe_allow_html=True)
+    st.markdown(_css(theme.tokens()), unsafe_allow_html=True)
 
 
 # --- Status bar ----------------------------------------------------------------
@@ -143,7 +145,7 @@ def booked_line(record: dict, committee: str) -> None:
         f'<span style="color:#11683A;font-weight:700" aria-hidden="true">&#10003;</span>'
         f'<b>{_html.escape(show.signed_money(amount))}</b>'
         f'<span>{_html.escape(show.merchant(record.get("details")))}</span>'
-        f'<span style="color:{theme.INK_SOFT};font-size:14px">{_html.escape(show.day(record.get("transaction_date")))}</span>'
+        f'<span style="color:{theme.tokens().INK_SOFT};font-size:14px">{_html.escape(show.day(record.get("transaction_date")))}</span>'
         f'<span class="ais-tag ok">{_html.escape(committee)}</span></div>'
     )
 

@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import re
 import runpy
+from html import escape
+from urllib.parse import quote
 from pathlib import Path
 from typing import Iterable
 
@@ -39,7 +41,7 @@ import streamlit as st
 
 from .. import auth, settings
 from ..domain.money import format_currency, format_delta
-from . import theme
+from . import appearance, theme
 
 _HUB_PENDING_KEY = "_ais_hub_pending"
 _VIEWS_DIR = Path(__file__).resolve().parent.parent / "views"
@@ -54,12 +56,12 @@ def bootstrap(page_title: str = "UF AIS Financial Management") -> None:
         # macOS and Android -- and reads as a placeholder either way.
         page_icon=":material/account_balance:",
         layout="wide",
-        # Pebble navigates from the top bar. The sidebar only holds the role
-        # switcher, sandbox controls and sign-out, so it starts closed.
+        # Pebble navigates from the top bar, and the profile menu took over
+        # what the sidebar held. Nothing renders into the sidebar any more.
         initial_sidebar_state="collapsed",
     )
     theme.register()
-    st.markdown(theme.APP_CSS, unsafe_allow_html=True)
+    st.markdown(theme.app_css(), unsafe_allow_html=True)
 
 
 def environment_banner() -> None:
@@ -68,22 +70,42 @@ def environment_banner() -> None:
     label = "SANDBOX" if sandbox else "PRODUCTION"
     css_class = "ais-banner" if sandbox else "ais-banner ais-banner-prod"
     st.markdown(
-        f'<div class="{css_class}"><b>{label}</b> — {settings.banner_text()}</div>',
+        # banner_text() starts with the label itself ("SANDBOX — ..."); show it once, in bold.
+        f'<div class="{css_class}"><b>{label}</b> — {settings.banner_text().removeprefix(label).lstrip(" —")}</div>',
         unsafe_allow_html=True,
     )
 
 
-def page_header(title: str, subtitle: str = "") -> None:
+def tip(text: str) -> str:
     """
-    Title and one line of context.
+    A small "?" that shows `text` on hover or keyboard focus (2026-11-13).
+
+    Descriptions used to sit under titles and charts as grey paragraphs, which
+    pushed the figures down the page. They live here now, beside the title
+    they explain. Markdown bold is dropped: the tooltip is plain text.
+    """
+    if not text:
+        return ""
+    plain = escape(" ".join(str(text).replace("**", "").split()))
+    return f'<span class="ais-tip" tabindex="0" role="note" aria-label="{plain}" data-tip="{plain}">?</span>'
+
+
+def page_header(title: str, description: str = "", *, context: str = "") -> None:
+    """
+    Title, with what the page is for in a "?" beside it.
+
+    `description` (what the page does) goes in the tooltip; `context` (a fact
+    that changes, e.g. "Fall 2026 · week 13 of 18") stays visible under the
+    title.
 
     When the page is running inside a hub, the hub's view switcher renders
     here, beside the title, so every merged page gets it without changes.
     """
     pending = st.session_state.pop(_HUB_PENDING_KEY, None)
-    # Long view names ("Import & review · All transactions · Needs attention")
-    # don't fit beside the title; they go on their own line under it instead.
-    stacked = bool(pending) and sum(len(label) for label in pending[1]) > 32
+    # Two short views fit beside the title. Three or more, or long names
+    # ("Import & review · All transactions · Needs attention"), get their own
+    # row under it: beside the title they scrolled out of sight at laptop widths.
+    stacked = bool(pending) and (len(pending[1]) > 2 or sum(len(label) for label in pending[1]) > 32)
     if pending and not stacked:
         title_column, switch_column = st.columns([3, 2], vertical_alignment="bottom")
     elif pending:
@@ -91,7 +113,7 @@ def page_header(title: str, subtitle: str = "") -> None:
     else:
         title_column, switch_column = st.container(), None
     with title_column:
-        body = f"<h1>{title}</h1>" + (f"<p>{subtitle}</p>" if subtitle else "")
+        body = f"<h1>{title}{tip(description)}</h1>" + (f"<p>{context}</p>" if context else "")
         html(f'<div class="ais-head">{body}</div>')
     if pending and switch_column is not None:
         key, labels = pending
@@ -101,6 +123,13 @@ def page_header(title: str, subtitle: str = "") -> None:
             )
     show_flash()
     st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
+
+
+def section_header(title: str, subtitle: str = "", *, anchor: str | None = None, help: str = "") -> None:
+    """A second title further down a page, e.g. Home's "This term in detail"."""
+    id_attr = f' id="{anchor}"' if anchor else ""
+    body = f"<h2>{title}{tip(help)}</h2>" + (f"<p>{subtitle}</p>" if subtitle else "")
+    html(f'<div class="ais-section"{id_attr}>{body}</div>')
 
 
 def html(markup: str) -> None:
@@ -125,9 +154,9 @@ def card(name: str, *, order: int = 1, hero: bool = False):
     return st.container(key=f"{prefix}-o{min(max(int(order), 1), 9)}-{name}")
 
 
-def heading(title: str, right: str = "") -> None:
-    """Card title row, with optional right-aligned HTML (a pill, a legend)."""
-    html(f'<div class="ais-card-head"><span>{title}</span>{right}</div>')
+def heading(title: str, right: str = "", *, help: str = "") -> None:
+    """Card title row, with optional right-aligned HTML (a pill, a legend) and a "?" tooltip."""
+    html(f'<div class="ais-card-head"><span>{title}{tip(help)}</span>{right}</div>')
 
 
 def legend(items: list[tuple[str, str]]) -> str:
@@ -250,10 +279,15 @@ def metric(
     trend: list[float] | None = None,
     color: str | None = None,
     bars: list[float] | None = None,
+    bar_labels: list[str] | None = None,
+    bar_hover: list[str] | None = None,
+    bar_note: str | None = None,
     tone: str | None = None,
+    help: str | None = None,
 ) -> None:
     """
-    One KPI.
+    One KPI. `help` puts a "?" beside the label with that text on hover. `bar_labels` captions each mini bar ("F24"), `bar_hover` is each
+    bar's full reading, `bar_note` one line under the bars saying what they are.
 
     `tone` ("ok", "warn", "over") tints the tile and colours its value by status.
 
@@ -271,6 +305,7 @@ def metric(
     take the delta's red/green and sit on a filled panel, and cannot be given
     per-bar colours, so they could not follow "past terms grey, this term ink".
     """
+    t = theme.tokens()
     # A string is already formatted -- a percentage, a ratio, a count with a
     # unit. Passing one through `f"{value:,}"` raises, so a caller with anything
     # that is not a bare number had no way to use this at all.
@@ -296,6 +331,7 @@ def metric(
         value=display_value,
         delta=display_delta,
         delta_color="inverse" if inverse else "normal",
+        help=money_safe(help) if help else None,
     )
     if bars:
         trend = [float(v or 0) for v in bars]
@@ -309,14 +345,16 @@ def metric(
         # Two of the four tiles were saying something false. A caller that
         # knows what the figure means passes `color`; the old behaviour stays
         # as the fallback for callers that do not.
-        spark_color = color or theme.INK
+        spark_color = color or t.INK
         container.plotly_chart(
-            _transparent(charts.sparkline(trend, color=spark_color)),
+            _transparent(charts.sparkline(trend, color=spark_color, labels=bar_labels, hover=bar_hover)),
             width="stretch",
             theme=None,
             config={"displayModeBar": False},
             key=f"spark_{label}",
         )
+        if bar_note:
+            container.caption(bar_note)
 
 
 def metric_row(specs: Iterable[dict]) -> None:
@@ -336,6 +374,9 @@ def metric_row(specs: Iterable[dict]) -> None:
             trend=spec.get("trend"),
             color=spec.get("color"),
             bars=spec.get("bars"),
+            bar_labels=spec.get("bar_labels"),
+            bar_hover=spec.get("bar_hover"),
+            bar_note=spec.get("bar_note"),
             tone=spec.get("tone"),
         )
 
@@ -493,26 +534,76 @@ def dataframe(df: pd.DataFrame, **kwargs) -> None:
 # single light palette, so there is no second mode to switch to.
 
 
-def sidebar_footer() -> None:
-    st.sidebar.markdown("---")
+def appearance_sync(pages: Iterable, current_identity_label: str | None = None) -> None:
+    """
+    Keep the browser's theme choice in step with the Appearance control. Call
+    once per run, after `st.navigation`, with every registered st.Page: the
+    choice is written for each page's path. In the sandbox the identity label
+    rides along in the reload URL so a theme change doesn't sign anyone out.
+    """
+    paths = [getattr(page, "url_path", "") or "" for page in pages]
+    query = f"as={quote(current_identity_label)}" if current_identity_label else None
+    appearance.sync(paths, reload_query=query)
 
-    # Sign out, in production only. `auth.sign_out()` was written correct and
-    # called by nothing, which meant the app had no way to end a session at all:
-    # once an identity was in st.session_state it stayed until the browser
-    # session did. On a shared treasury laptop the next person to open the tab
-    # was signed in as ADMIN.
-    #
-    # Absent in the open sandbox on purpose -- there the identity is fabricated and
-    # the sidebar role switcher is how you change it.
-    if not settings.is_sandbox() or settings.sandbox_login_enabled():
-        identity = st.session_state.get(auth.SESSION_KEY)
-        if identity is not None:
-            st.sidebar.caption(f"Signed in as **{identity.email}**")
-            if st.sidebar.button("Sign out", width="stretch", key="_ais_sign_out"):
-                auth.sign_out()
-                st.rerun()
 
-    mode = "Sandbox" if settings.is_sandbox() else "Production"
-    st.sidebar.caption(f"Mode: **{mode}**")
-    if settings.is_sandbox():
-        st.sidebar.caption("Local SQLite. No network, no real money.")
+def profile_menu(links: Iterable, sandbox_controls=None) -> None:
+    """
+    The profile button at the top right, which replaced the sidebar (2026-11-08).
+
+    Opens a menu with who is signed in, links to the pages kept out of the top
+    bar (`links`: st.Page objects the person may open), the sandbox role
+    switcher and `sandbox_controls` (a callable), and Sign out.
+
+    Rendered into the page body and pinned over the header's right side by the
+    `st-key-ais-profile` rule in ui/theme.py: Streamlit has no slot in its
+    header for app widgets.
+    """
+    identity = st.session_state.get(auth.SESSION_KEY)
+    role_label = identity.role.label if identity is not None else "Account"
+    with st.container(key="ais-profile"):
+        with st.popover(role_label, icon=":material/account_circle:"):
+            if identity is not None:
+                committee = ""
+                if identity.committee_id is not None:
+                    from ..config.categories import committee_name
+
+                    committee = f" · {committee_name(identity.committee_id)}"
+                html(
+                    '<div class="ais-profile-who">'
+                    f"<b>{identity.email}</b><span>{role_label}{committee}</span></div>"
+                )
+
+            links = list(links)
+            if links:
+                st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
+                for page in links:
+                    st.page_link(page, width="stretch")
+
+            # Light or dark (2026-11-09). Streamlit follows the device unless a
+            # choice is made here; see ui/appearance.py for how the choice lands.
+            st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
+            appearance.control()
+
+            if settings.is_sandbox() and not settings.sandbox_login_enabled():
+                st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
+                auth.role_switcher()
+                if sandbox_controls is not None:
+                    sandbox_controls()
+
+            # Sign out, in production only. `auth.sign_out()` was written correct and
+            # called by nothing, which meant the app had no way to end a session at all:
+            # once an identity was in st.session_state it stayed until the browser
+            # session did. On a shared treasury laptop the next person to open the tab
+            # was signed in as ADMIN.
+            #
+            # Absent in the open sandbox on purpose -- there the identity is fabricated
+            # and the role switcher above is how you change it.
+            if identity is not None and (
+                not settings.is_sandbox() or settings.sandbox_login_enabled()
+            ):
+                st.markdown('<hr class="ais-rule" />', unsafe_allow_html=True)
+                if st.button(
+                    "Sign out", icon=":material/logout:", width="stretch", key="_ais_sign_out"
+                ):
+                    auth.sign_out()
+                    st.rerun()

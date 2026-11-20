@@ -29,6 +29,7 @@ from ais_fmd.config.categories import (
 )
 from ais_fmd.data import repositories as repo
 from ais_fmd.domain import flags as flags_domain
+from ais_fmd.domain.details import tidy
 from ais_fmd.domain.money import format_currency
 from ais_fmd.ui import inbox, shell
 
@@ -65,7 +66,7 @@ def _flash() -> None:
 
 def _charge_label(row: pd.Series) -> str:
     day = pd.Timestamp(row["transaction_date"]).date()
-    details = str(row["details"] or "")[:48]
+    details = tidy(row["details"])[:48]
     return f"{day}  ·  {format_currency(row['amount'])}  ·  {details}"
 
 
@@ -153,11 +154,6 @@ def vp_panel(
     # Open straight after a submit so the confirmation is actually seen.
     with st.expander("This isn't ours — flag a charge", expanded=_FLASH in st.session_state):
         _flash()
-        shell.say(
-            "If a charge here belongs to a different committee, flag it and say why. "
-            "The treasurer reviews it. You can't change the booking yourself, so "
-            "nothing moves until they decide.",
-        )
 
         if not labels:
             st.caption("There are no unflagged charges in this view.")
@@ -167,6 +163,9 @@ def vp_panel(
                 list(labels),
                 format_func=lambda tid: labels[tid],
                 key=f"flag_charge_{nonce}",
+                help="If a charge here belongs to a different committee, flag it and say why. "
+                     "The treasurer reviews it. You can't change the booking yourself, so "
+                     "nothing moves until they decide.",
             )
             note = st.text_area(
                 "Why isn't it yours?",
@@ -193,14 +192,14 @@ def vp_panel(
                     "Flagged": pd.to_datetime(mine["flagged_at"]).dt.date,
                     "Charge date": pd.to_datetime(mine["transaction_date"]).dt.date,
                     "Amount": mine["amount"],
-                    "Details": mine["details"].fillna("").astype(str).str.slice(0, 60),
+                    "Details": mine["details"].map(tidy).str.slice(0, 60),
                     "Your note": mine["note"],
                     "Status": mine["status"].map(flags_domain.vp_status_label),
                     "Treasurer's reply": mine["resolution_note"].fillna(""),
                 }
             )
             shell.dataframe(
-                table, column_config={"Amount": st.column_config.NumberColumn(format="$%.2f")}
+                table, column_config={"Amount": st.column_config.NumberColumn(format="dollar")}
             )
 
 
@@ -231,9 +230,7 @@ def treasurer_panel(transactions: pd.DataFrame, actor: str, *, inline: bool = Fa
             shell.say("No VP has an open flag. Nothing to review here.", caption=True)
         else:
             shell.say(
-                "A VP says these charges belong to a different committee. Nothing has "
-                "changed yet. Decide each one: keep it where it is, or move it -- and "
-                "the booking changes right here, with the flag closed to match.",
+                "A VP says these charges belong to a different committee. Nothing has changed yet.",
                 caption=True,
             )
             detailed = flags_domain.with_charges(open_flags, transactions)
@@ -255,7 +252,7 @@ def treasurer_panel(transactions: pd.DataFrame, actor: str, *, inline: bool = Fa
                         "Your reply": recent["resolution_note"].fillna(""),
                     }
                 ),
-                column_config={"Amount": st.column_config.NumberColumn(format="$%.2f")},
+                column_config={"Amount": st.column_config.NumberColumn(format="dollar")},
             )
 
 
@@ -281,7 +278,10 @@ def _treasurer_decision(row: pd.Series, actor: str) -> None:
             )
         options = [VERDICT_KEEP, VERDICT_FIXED] if moved_since else [VERDICT_KEEP, VERDICT_MOVE, VERDICT_FIXED]
         # No default: a verdict that moves money should be chosen, not left selected.
-        verdict = st.radio("Your decision", options, index=None, key=f"flag_verdict_{flag_id}")
+        verdict = st.radio(
+            "Your decision", options, index=None, key=f"flag_verdict_{flag_id}",
+            help="Keep it where it is, or move it: the booking changes right here, with the flag closed to match.",
+        )
 
         destination = None
         if verdict == VERDICT_MOVE:
