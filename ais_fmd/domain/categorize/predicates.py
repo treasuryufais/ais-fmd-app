@@ -888,6 +888,9 @@ def _event_prices() -> tuple[dict, ...]:
 
 def rule_event_price(record: dict) -> Classification | None:
     """
+    NOT WIRED IN (2026-11-13): the 11-03/11-06 treasury rulings send memo-less
+    payments to the model with the upload as context instead. Kept for reference.
+
     A memo-less member payment at a merch or event price, inside its dates.
 
     Runs after the memo and dues rules, so it only sees what they left: a
@@ -954,7 +957,6 @@ EXACT_RULES: tuple[Callable[[dict], Classification | None], ...] = (
     rule_memo_committee,
     rule_dues,
     rule_dues_memo,
-    rule_event_price,
     rule_reimbursement,
 )
 
@@ -999,7 +1001,6 @@ def exact_rules(
         rule_memo_committee,
         partial(rule_dues, schedule=dues),
         rule_dues_memo,
-        rule_event_price,
         rule_reimbursement,
     )
 
